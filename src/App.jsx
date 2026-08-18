@@ -7,7 +7,7 @@ import {
   Wallet, PieChart as PieChartIcon, Landmark, Shirt, Zap, ShieldCheck,
   User, CreditCard, Briefcase, Search, RotateCcw, Plus, Pencil, Trash2, AlertCircle,
   Phone, MessageCircle, MoreHorizontal, ImageIcon, ArrowLeftRight, Users, Filter, X,
-  Download, Upload, Copy, Shield, LogOut, Eye, EyeOff, ShieldCheck, ArrowRight,
+  Download, Upload, Copy, Shield, LogOut, Eye, EyeOff, ArrowRight,
   FileSpreadsheet, FileText, Printer, Share2, SlidersHorizontal
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, BarChart, Bar, Legend } from "recharts";
