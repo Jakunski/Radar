@@ -15,6 +15,10 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 const STORAGE_KEY = "radar:producoes";
 const ACIONAMENTOS_KEY = "radar:acionamentos";
 const OPORTUNIDADES_KEY = "radar:oportunidades_manuais";
+const CONSULTORES_KEY = "radar:consultores";
+const METAS_INDIVIDUAIS_KEY = "radar:metas_individuais";
+const METAS_LOJA_KEY = "radar:metas_loja";
+const CONFIG_KEY = "radar:config";
 
 // ---- Dados fixos da loja (viram estado editável no App) ----
 const CONSULTORES_PADRAO = [
@@ -25,7 +29,7 @@ const CONSULTORES_PADRAO = [
 ];
 const METAS_MENSAIS_PADRAO = { creditoPessoal: 50000, consignado: 40000, clt: 20000, antecipacao: 12500 };
 const META_SEGURO_UNID_PADRAO = 6;
-const ELEGIBILIDADE = { seguro: 3, consignado: 3, clt: 2 };
+const ELEGIBILIDADE = { seguro: 3, consignado: 3, clt: 2, superConta: 4 };
 const META_ACIONAMENTOS_DIA_CONSULTOR = 80;
 const DIAS_UTEIS_MES_PADRAO = 22;
 const DIAS_UTEIS_PASSADOS_PADRAO = 8;
@@ -50,7 +54,7 @@ function saudacao() {
   return "Boa noite";
 }
 function formatBRL(v) {
-  return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
+  return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 function iniciais(nome) { return nome.slice(0, 2).toUpperCase(); }
 function horaAgora() { return new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }); }
@@ -96,6 +100,7 @@ export default function RadarSistema() {
     return obj;
   });
   const [metaSeguroUnid, setMetaSeguroUnid] = useState(META_SEGURO_UNID_PADRAO);
+  const [supervisorPin, setSupervisorPin] = useState("");
   const [metaLojaPorProduto, setMetaLojaPorProduto] = useState(() => {
     const obj = {};
     Object.keys(METAS_MENSAIS_PADRAO).forEach((pid) => { obj[pid] = METAS_MENSAIS_PADRAO[pid] * CONSULTORES_PADRAO.length; });
@@ -116,6 +121,28 @@ export default function RadarSistema() {
         const r3 = await window.storage.get(OPORTUNIDADES_KEY, false);
         setOportunidadesManuais(r3 ? JSON.parse(r3.value) : []);
       } catch (e) { setOportunidadesManuais([]); }
+      try {
+        const r4 = await window.storage.get(CONSULTORES_KEY, false);
+        if (r4) setConsultores(JSON.parse(r4.value));
+      } catch (e) { /* mantém o padrão */ }
+      try {
+        const r5 = await window.storage.get(METAS_INDIVIDUAIS_KEY, false);
+        if (r5) setMetasIndividuais(JSON.parse(r5.value));
+      } catch (e) { /* mantém o padrão */ }
+      try {
+        const r6 = await window.storage.get(METAS_LOJA_KEY, false);
+        if (r6) setMetaLojaPorProduto(JSON.parse(r6.value));
+      } catch (e) { /* mantém o padrão */ }
+      try {
+        const r7 = await window.storage.get(CONFIG_KEY, false);
+        if (r7) {
+          const cfg = JSON.parse(r7.value);
+          if (cfg.diasUteisMes) setDiasUteisMes(cfg.diasUteisMes);
+          if (cfg.diasUteisPassados !== undefined) setDiasUteisPassados(cfg.diasUteisPassados);
+          if (cfg.metaSeguroUnid !== undefined) setMetaSeguroUnid(cfg.metaSeguroUnid);
+          if (cfg.supervisorPin !== undefined) setSupervisorPin(cfg.supervisorPin);
+        }
+      } catch (e) { /* mantém o padrão */ }
       setLoading(false);
     })();
   }, []);
@@ -150,30 +177,47 @@ export default function RadarSistema() {
     return persistir(OPORTUNIDADES_KEY, novaLista);
   }
 
-  // ---- gerenciamento de consultores e metas individuais ----
-  function adicionarConsultor(nome) {
+  // ---- gerenciamento de consultores e metas individuais (agora com persistência real) ----
+  async function adicionarConsultor(nome, externo = false) {
     const id = `${nome.toLowerCase().trim().replace(/\s+/g, "-")}-${Date.now()}`;
-    setConsultores((prev) => [...prev, { id, nome: nome.trim(), foto: null }]);
-    setMetasIndividuais((prev) => ({ ...prev, [id]: { creditoPessoal: 0, consignado: 0, clt: 0, antecipacao: 0 } }));
+    const novosConsultores = [...consultores, { id, nome: nome.trim(), foto: null, externo, pin: "" }];
+    const novasMetas = { ...metasIndividuais, [id]: { creditoPessoal: 0, consignado: 0, clt: 0, antecipacao: 0 } };
+    setConsultores(novosConsultores);
+    setMetasIndividuais(novasMetas);
+    await persistir(CONSULTORES_KEY, novosConsultores);
+    await persistir(METAS_INDIVIDUAIS_KEY, novasMetas);
   }
-  function removerConsultor(id) {
-    setConsultores((prev) => prev.filter((c) => c.id !== id));
-    setMetasIndividuais((prev) => {
-      const novo = { ...prev };
-      delete novo[id];
-      return novo;
-    });
+  async function removerConsultor(id) {
+    const novosConsultores = consultores.filter((c) => c.id !== id);
+    const novasMetas = { ...metasIndividuais };
+    delete novasMetas[id];
+    setConsultores(novosConsultores);
+    setMetasIndividuais(novasMetas);
+    await persistir(CONSULTORES_KEY, novosConsultores);
+    await persistir(METAS_INDIVIDUAIS_KEY, novasMetas);
   }
-  function atualizarFotoConsultor(id, fotoDataUrl) {
-    setConsultores((prev) => prev.map((c) => (c.id === id ? { ...c, foto: fotoDataUrl } : c)));
+  async function atualizarFotoConsultor(id, fotoDataUrl) {
+    const novosConsultores = consultores.map((c) => (c.id === id ? { ...c, foto: fotoDataUrl } : c));
+    setConsultores(novosConsultores);
+    await persistir(CONSULTORES_KEY, novosConsultores);
   }
-  function atualizarMetaIndividual(id, produtoId, valor) {
-    setMetasIndividuais((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), [produtoId]: Number(valor) || 0 } }));
+  async function atualizarConsultorCampo(id, campo, valor) {
+    const novosConsultores = consultores.map((c) => (c.id === id ? { ...c, [campo]: valor } : c));
+    setConsultores(novosConsultores);
+    await persistir(CONSULTORES_KEY, novosConsultores);
+  }
+  async function atualizarMetaIndividual(id, produtoId, valor) {
+    const novasMetas = { ...metasIndividuais, [id]: { ...(metasIndividuais[id] || {}), [produtoId]: Number(valor) || 0 } };
+    setMetasIndividuais(novasMetas);
+    await persistir(METAS_INDIVIDUAIS_KEY, novasMetas);
   }
 
   // ---- cálculos compartilhados (usados por Matinal, Painel e Parcial) ----
   const mesRef = mesAtual();
   const producoesMes = useMemo(() => producoes.filter((p) => (p.data || "").slice(0, 7) === mesRef), [producoes, mesRef]);
+
+  // consultores "de loja" = não-externos. Só eles entram na meta/Mix oficial da loja.
+  const consultoresLoja = consultores.filter((c) => !c.externo);
 
   function totalMesConsultorProduto(consultorId, produtoId) {
     return producoesMes.filter((p) => p.consultorId === consultorId && p.produto === produtoId)
@@ -182,9 +226,17 @@ export default function RadarSistema() {
   function totalMesConsultorMix(consultorId) {
     return ["creditoPessoal", "consignado", "clt", "antecipacao"].reduce((s, prod) => s + totalMesConsultorProduto(consultorId, prod), 0);
   }
-  const producaoMesLojaGlobal = consultores.reduce((acc, c) => acc + totalMesConsultorMix(c.id), 0);
+  const producaoMesLojaGlobal = consultoresLoja.reduce((acc, c) => acc + totalMesConsultorMix(c.id), 0);
   function contratosMesConsultorProduto(consultorId, produtoId) {
     return producoesMes.filter((p) => p.consultorId === consultorId && p.produto === produtoId).length;
+  }
+  // SuperConta conta por CPF único — mesmo cliente lançado 2x não conta em dobro
+  function superContasUnicasMesConsultor(consultorId) {
+    const cpfs = producoesMes
+      .filter((p) => p.consultorId === consultorId && p.produto === "creditoPessoal" && p.tipoCredito === "SuperConta")
+      .map((p) => (p.cpf || "").replace(/\D/g, ""))
+      .filter(Boolean);
+    return new Set(cpfs).size;
   }
   // meta individual: cada consultor tem a sua própria, diferente de colega pra colega
   function metaIndividualConsultorProduto(consultorId, produtoId) {
@@ -197,18 +249,35 @@ export default function RadarSistema() {
   function metaLojaProdutoTotal(produtoId) {
     return Number(metaLojaPorProduto[produtoId]) || 0;
   }
-  function atualizarMetaLojaProduto(produtoId, valor) {
-    setMetaLojaPorProduto((prev) => ({ ...prev, [produtoId]: Number(valor) || 0 }));
+  async function atualizarMetaLojaProduto(produtoId, valor) {
+    const novasMetasLoja = { ...metaLojaPorProduto, [produtoId]: Number(valor) || 0 };
+    setMetaLojaPorProduto(novasMetasLoja);
+    await persistir(METAS_LOJA_KEY, novasMetasLoja);
   }
   const metaLojaMix = ["creditoPessoal", "consignado", "clt", "antecipacao"].reduce((s, p) => s + metaLojaProdutoTotal(p), 0);
 
+  async function salvarConfig(novoDiasUteisMes, novoDiasUteisPassados, novoMetaSeguroUnid, novoSupervisorPin) {
+    const cfg = {
+      diasUteisMes: novoDiasUteisMes ?? diasUteisMes,
+      diasUteisPassados: novoDiasUteisPassados ?? diasUteisPassados,
+      metaSeguroUnid: novoMetaSeguroUnid ?? metaSeguroUnid,
+      supervisorPin: novoSupervisorPin ?? supervisorPin,
+    };
+    if (novoDiasUteisMes !== undefined) setDiasUteisMes(novoDiasUteisMes);
+    if (novoDiasUteisPassados !== undefined) setDiasUteisPassados(novoDiasUteisPassados);
+    if (novoMetaSeguroUnid !== undefined) setMetaSeguroUnid(novoMetaSeguroUnid);
+    if (novoSupervisorPin !== undefined) setSupervisorPin(novoSupervisorPin);
+    await persistir(CONFIG_KEY, cfg);
+  }
+
   const ctx = {
-    producoes, acionamentos, oportunidadesManuais, loading, diasUteisMes, setDiasUteisMes, diasUteisPassados, setDiasUteisPassados,
-    consultores, adicionarConsultor, removerConsultor, atualizarFotoConsultor,
-    metasIndividuais, atualizarMetaIndividual, metaSeguroUnid, setMetaSeguroUnid,
+    producoes, acionamentos, oportunidadesManuais, loading, diasUteisMes, diasUteisPassados,
+    consultores, consultoresLoja, adicionarConsultor, removerConsultor, atualizarFotoConsultor, atualizarConsultorCampo,
+    metasIndividuais, atualizarMetaIndividual, metaSeguroUnid,
     metaLojaPorProduto, atualizarMetaLojaProduto, metaLojaMix,
     salvarProducoes, salvarAcionamentos, salvarOportunidades, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto,
-    metaIndividualConsultorProduto, metaIndividualConsultorMix, metaLojaProdutoTotal,
+    superContasUnicasMesConsultor, metaIndividualConsultorProduto, metaIndividualConsultorMix, metaLojaProdutoTotal,
+    supervisorPin, salvarConfig,
   };
 
   const telasPermitidasConsultor = ["minhaProducao", "producao", "radarComercial"];
@@ -228,7 +297,7 @@ export default function RadarSistema() {
   }
 
   if (!logado) {
-    return <TelaLogin onEntrar={entrar} producaoMesLoja={producaoMesLojaGlobal} metaLojaMix={metaLojaMix} consultores={consultores} />;
+    return <TelaLogin onEntrar={entrar} producaoMesLoja={producaoMesLojaGlobal} metaLojaMix={metaLojaMix} consultores={consultores} supervisorPin={supervisorPin} />;
   }
 
   return (
@@ -356,7 +425,7 @@ function Sidebar({ tela, setTela, onSair, perfil, consultorLogado }) {
 // ============================================================
 // TELA: LOGIN
 // ============================================================
-function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores }) {
+function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores, supervisorPin }) {
   const [perfilEscolhido, setPerfilEscolhido] = useState("supervisora");
   const [consultorEscolhidoId, setConsultorEscolhidoId] = useState("");
   const [usuario, setUsuario] = useState("");
@@ -371,12 +440,26 @@ function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores }) {
       setErro("Selecione qual consultor é você.");
       return;
     }
+    // valida o PIN só se um PIN tiver sido configurado em Configurações — assim não trava
+    // ninguém enquanto o PIN ainda não foi definido pela primeira vez.
+    if (perfilEscolhido === "supervisora") {
+      if (supervisorPin && supervisorPin.trim() && senha !== supervisorPin) {
+        setErro("PIN incorreto.");
+        return;
+      }
+    } else {
+      const consultor = consultores.find((c) => c.id === consultorEscolhidoId);
+      if (consultor?.pin && consultor.pin.trim() && senha !== consultor.pin) {
+        setErro("PIN incorreto.");
+        return;
+      }
+    }
     setErro("");
     onEntrar(perfilEscolhido, consultorEscolhidoId);
   }
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-violet-100 via-violet-50 to-orange-50 flex items-center justify-center p-4 sm:p-8 relative overflow-x-hidden overflow-y-auto font-[Inter,sans-serif]">
+    <div className="min-h-screen w-full bg-gradient-to-br from-violet-100 via-violet-50 to-orange-50 flex items-center justify-center p-4 sm:p-8 pb-32 sm:pb-36 relative overflow-x-hidden overflow-y-auto font-[Inter,sans-serif]">
       <style>{`
         @keyframes radarSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes radarPing { 0% { transform: scale(0.55); opacity: 0.65; } 80% { opacity: 0; } 100% { transform: scale(1.35); opacity: 0; } }
@@ -481,9 +564,9 @@ function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores }) {
               </div>
             )}
             <div>
-              <label className="flex items-center gap-1.5 text-xs font-bold text-violet-900 mb-1.5"><CreditCard size={13} /> SENHA</label>
+              <label className="flex items-center gap-1.5 text-xs font-bold text-violet-900 mb-1.5"><CreditCard size={13} /> PIN DE ACESSO</label>
               <div className="relative">
-                <input type={mostrarSenha ? "text" : "password"} value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="Digite sua senha"
+                <input type={mostrarSenha ? "text" : "password"} inputMode="numeric" value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="Digite seu PIN"
                   className="w-full rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 pr-11 text-sm text-violet-950 placeholder:text-violet-300 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200 transition" />
                 <button type="button" onClick={() => setMostrarSenha(!mostrarSenha)} className="absolute right-4 top-1/2 -translate-y-1/2 text-violet-300 hover:text-violet-600 transition">
                   {mostrarSenha ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -496,7 +579,7 @@ function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores }) {
               ENTRAR NO SISTEMA <ArrowRight size={16} />
             </button>
           </form>
-          <p className="text-[11px] text-violet-300 mt-4 text-center">Protótipo — qualquer usuário e senha entram no sistema.</p>
+          <p className="text-[11px] text-violet-300 mt-4 text-center">Usuário é decorativo. PIN só é validado se já configurado.</p>
         </div>
       </div>
 
@@ -581,7 +664,7 @@ function RadarLogoGrande() {
 // ============================================================
 // TELA: MINHA PRODUÇÃO (perfil consultor)
 // ============================================================
-function TelaMinhaProducao({ consultorLogadoId, consultores, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto, metaIndividualConsultorProduto, metaIndividualConsultorMix, diasUteisMes, diasUteisPassados, producoes }) {
+function TelaMinhaProducao({ consultorLogadoId, consultores, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto, superContasUnicasMesConsultor, metaIndividualConsultorProduto, metaIndividualConsultorMix, diasUteisMes, diasUteisPassados, producoes }) {
   const consultor = consultores.find((c) => c.id === consultorLogadoId);
   const diasUteisRestantes = Math.max(diasUteisMes - diasUteisPassados, 0);
   const ritmoIdeal = diasUteisMes > 0 ? Math.round((diasUteisPassados / diasUteisMes) * 100) : 0;
@@ -608,10 +691,11 @@ function TelaMinhaProducao({ consultorLogadoId, consultores, totalMesConsultorPr
     return { id: pid, nome, metaP, realP, faltaP, diariaP, pctP };
   });
 
+  const superContas = superContasUnicasMesConsultor(consultor.id);
   const seguros = contratosMesConsultorProduto(consultor.id, "seguro");
   const consignados = contratosMesConsultorProduto(consultor.id, "consignado");
   const clts = contratosMesConsultorProduto(consultor.id, "clt");
-  const elegivel = seguros >= ELEGIBILIDADE.seguro && consignados >= ELEGIBILIDADE.consignado && clts >= ELEGIBILIDADE.clt;
+  const elegivel = superContas >= ELEGIBILIDADE.superConta && seguros >= ELEGIBILIDADE.seguro && consignados >= ELEGIBILIDADE.consignado && clts >= ELEGIBILIDADE.clt;
 
   const minhasProducoesRecentes = producoes.filter((p) => p.consultorId === consultor.id).sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0)).slice(0, 5);
 
@@ -681,8 +765,9 @@ function TelaMinhaProducao({ consultorLogadoId, consultores, totalMesConsultorPr
 
       <div className="rounded-2xl border border-violet-100 bg-white p-4 sm:p-5">
         <h2 className="text-sm font-extrabold text-violet-950 mb-1 flex items-center gap-2"><ClipboardList size={16} className="text-violet-600" /> Minha Elegibilidade ao Comissionamento</h2>
-        <p className="text-[11px] text-slate-400 mb-4">Contagem por número de contratos no mês.</p>
-        <div className="grid grid-cols-3 gap-3 mb-3">
+        <p className="text-[11px] text-slate-400 mb-4">Contagem por número de contratos no mês. SuperConta conta por CPF único.</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+          <ElegibItem label="SuperConta" atual={superContas} meta={ELEGIBILIDADE.superConta} />
           <ElegibItem label="Seguro" atual={seguros} meta={ELEGIBILIDADE.seguro} />
           <ElegibItem label="Consignado" atual={consignados} meta={ELEGIBILIDADE.consignado} />
           <ElegibItem label="CLT" atual={clts} meta={ELEGIBILIDADE.clt} />
@@ -729,7 +814,8 @@ function ElegibItem({ label, atual, meta }) {
 // ============================================================
 // TELA: MATINAL
 // ============================================================
-function TelaMatinal({ producoes, diasUteisMes, setDiasUteisMes, diasUteisPassados, setDiasUteisPassados, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto, loading, consultores, metaIndividualConsultorProduto, metaIndividualConsultorMix, metaLojaProdutoTotal, metaLojaMix, metaSeguroUnid }) {
+function TelaMatinal({ producoes, diasUteisMes, diasUteisPassados, salvarConfig, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto, superContasUnicasMesConsultor, loading, consultoresLoja, metaIndividualConsultorProduto, metaIndividualConsultorMix, metaLojaProdutoTotal, metaLojaMix, metaSeguroUnid }) {
+  const consultores = consultoresLoja;
   const diasUteisRestantes = Math.max(diasUteisMes - diasUteisPassados, 0);
   const ritmoIdeal = diasUteisMes > 0 ? Math.round((diasUteisPassados / diasUteisMes) * 100) : 0;
   const metaMixMensalTotal = metaLojaMix;
@@ -798,11 +884,11 @@ function TelaMatinal({ producoes, diasUteisMes, setDiasUteisMes, diasUteisPassad
           </div>
           <div className="flex flex-wrap gap-3 mb-3">
             <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Dias úteis no mês
-              <input type="number" min={1} value={diasUteisMes} onChange={(e) => setDiasUteisMes(Math.max(1, Number(e.target.value) || 1))}
+              <input type="number" min={1} value={diasUteisMes} onChange={(e) => salvarConfig(Math.max(1, Number(e.target.value) || 1))}
                 className="w-14 rounded-lg border border-violet-200 bg-violet-50 px-2 py-1 text-xs font-bold text-violet-950 text-center outline-none focus:border-violet-500" />
             </label>
             <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Já passados
-              <input type="number" min={0} value={diasUteisPassados} onChange={(e) => setDiasUteisPassados(Math.max(0, Number(e.target.value) || 0))}
+              <input type="number" min={0} value={diasUteisPassados} onChange={(e) => salvarConfig(undefined, Math.max(0, Number(e.target.value) || 0))}
                 className="w-14 rounded-lg border border-violet-200 bg-violet-50 px-2 py-1 text-xs font-bold text-violet-950 text-center outline-none focus:border-violet-500" />
             </label>
           </div>
@@ -969,7 +1055,7 @@ function TelaMatinal({ producoes, diasUteisMes, setDiasUteisMes, diasUteisPassad
         </div>
       </div>
 
-      <ElegibilidadePanel contratosMesConsultorProduto={contratosMesConsultorProduto} consultores={consultores} />
+      <ElegibilidadePanel contratosMesConsultorProduto={contratosMesConsultorProduto} consultores={consultores} superContasUnicasMesConsultor={superContasUnicasMesConsultor} />
     </>
   );
 }
@@ -1546,7 +1632,7 @@ function TelaCentralProducao({ producoes, salvarProducoes, consultores, consulto
     if (!campos.data) return setMensagem({ tipo: "erro", texto: "Informe a data da produção." });
     if (!campos.produto) return setMensagem({ tipo: "erro", texto: "Selecione o produto." });
     if (!campos.consultorId) return setMensagem({ tipo: "erro", texto: "Selecione o consultor responsável." });
-    if (campos.produto !== "seguro" && (!campos.valor || Number(campos.valor) <= 0)) return setMensagem({ tipo: "erro", texto: "Informe o valor liberado." });
+    if (campos.produto !== "seguro" && (!campos.valor || Number(String(campos.valor).replace(",", ".")) <= 0)) return setMensagem({ tipo: "erro", texto: "Informe o valor liberado." });
 
     setSalvando(true); setMensagem(null);
 
@@ -1556,7 +1642,7 @@ function TelaCentralProducao({ producoes, salvarProducoes, consultores, consulto
       criadoEm: editandoId ? producoes.find((p) => p.id === editandoId)?.criadoEm || Date.now() : Date.now(),
       hora: editandoId ? producoes.find((p) => p.id === editandoId)?.hora || horaAgora() : horaAgora(),
       cliente: campos.cliente.trim(), cpf: campos.cpf.trim(), telefone: campos.telefone.trim(), adesao: campos.adesao.trim(),
-      produto: campos.produto, valor: Number(campos.valor) || 0, consultorId: campos.consultorId,
+      produto: campos.produto, valor: Number(String(campos.valor).replace(",", ".")) || 0, consultorId: campos.consultorId,
       tipoCredito: campos.produto === "creditoPessoal" ? campos.tipoCredito : "",
       proximoRefin: campos.produto === "creditoPessoal" ? campos.proximoRefin : "",
       possuiOferta: campos.produto === "creditoPessoal" ? campos.possuiOferta : "",
@@ -1637,7 +1723,20 @@ function TelaCentralProducao({ producoes, salvarProducoes, consultores, consulto
               </select>
             </Campo>
             <Campo label={campos.produto === "seguro" ? "Valor do Prêmio (opcional)" : "Valor Liberado (R$) *"}>
-              <input type="number" min="0" step="0.01" value={campos.valor} onChange={(e) => setCampos({ ...campos, valor: e.target.value })} placeholder="0,00" className={inputClass} />
+              <input
+                type="text"
+                inputMode="decimal"
+                value={campos.valor}
+                onChange={(e) => {
+                  // aceita dígitos e uma vírgula/ponto decimal — nunca perde os centavos
+                  let v = e.target.value.replace(/[^0-9.,]/g, "");
+                  const partes = v.split(/[.,]/);
+                  if (partes.length > 2) v = partes[0] + "," + partes.slice(1).join("");
+                  setCampos({ ...campos, valor: v });
+                }}
+                placeholder="0,00"
+                className={inputClass}
+              />
             </Campo>
 
             {campos.produto === "creditoPessoal" && (
@@ -1737,12 +1836,14 @@ function Campo({ label, children }) {
 // ============================================================
 // TELA: CONFIGURAÇÕES
 // ============================================================
-function TelaConfiguracoes({ diasUteisMes, setDiasUteisMes, diasUteisPassados, setDiasUteisPassados, consultores, adicionarConsultor, removerConsultor, atualizarFotoConsultor, metasIndividuais, atualizarMetaIndividual, metaSeguroUnid, setMetaSeguroUnid, metaLojaPorProduto, atualizarMetaLojaProduto, metaLojaMix, metaIndividualConsultorMix }) {
+function TelaConfiguracoes({ diasUteisMes, diasUteisPassados, salvarConfig, consultores, adicionarConsultor, removerConsultor, atualizarFotoConsultor, atualizarConsultorCampo, metasIndividuais, atualizarMetaIndividual, metaSeguroUnid, metaLojaPorProduto, atualizarMetaLojaProduto, metaLojaMix, metaIndividualConsultorMix, supervisorPin, superContasUnicasMesConsultor }) {
   const [aba, setAba] = useState("metaLoja");
   const [metaLojaRascunho, setMetaLojaRascunho] = useState(metaLojaPorProduto);
   const [seguroRascunho, setSeguroRascunho] = useState(metaSeguroUnid);
+  const [pinRascunho, setPinRascunho] = useState(supervisorPin || "");
   const [salvo, setSalvo] = useState(null);
   const [novoNome, setNovoNome] = useState("");
+  const [novoExterno, setNovoExterno] = useState(false);
   const [consultorExpandido, setConsultorExpandido] = useState(null);
 
   const abas = [
@@ -1757,7 +1858,7 @@ function TelaConfiguracoes({ diasUteisMes, setDiasUteisMes, diasUteisPassados, s
     ["creditoPessoal", "consignado", "clt", "antecipacao"].forEach((pid) => {
       atualizarMetaLojaProduto(pid, metaLojaRascunho[pid]);
     });
-    setMetaSeguroUnid(Number(seguroRascunho) || 0);
+    salvarConfig(undefined, undefined, Number(seguroRascunho) || 0);
     setSalvo("loja");
     setTimeout(() => setSalvo(null), 3000);
   }
@@ -1768,8 +1869,9 @@ function TelaConfiguracoes({ diasUteisMes, setDiasUteisMes, diasUteisPassados, s
 
   function handleAdicionar() {
     if (!novoNome.trim()) return;
-    adicionarConsultor(novoNome.trim());
+    adicionarConsultor(novoNome.trim(), novoExterno);
     setNovoNome("");
+    setNovoExterno(false);
   }
 
   function handleFoto(id, file) {
@@ -1860,7 +1962,7 @@ function TelaConfiguracoes({ diasUteisMes, setDiasUteisMes, diasUteisPassados, s
           </div>
 
           <p className="text-[11px] text-violet-300 mt-4">
-            Critério de elegibilidade ao comissionamento (Seguro {ELEGIBILIDADE.seguro}, Consignado {ELEGIBILIDADE.consignado}, CLT {ELEGIBILIDADE.clt} contratos) ainda é fixo para todas — posso deixar editável se você quiser.
+            Critério de elegibilidade ao comissionamento (SuperConta {ELEGIBILIDADE.superConta}, Seguro {ELEGIBILIDADE.seguro}, Consignado {ELEGIBILIDADE.consignado}, CLT {ELEGIBILIDADE.clt} contratos — SuperConta conta só CPFs diferentes) ainda é fixo para todas — posso deixar editável se você quiser.
           </p>
         </div>
       )}
@@ -1909,18 +2011,24 @@ function TelaConfiguracoes({ diasUteisMes, setDiasUteisMes, diasUteisPassados, s
         <div className="rounded-2xl border border-violet-100 bg-white p-4 sm:p-6">
           <h2 className="text-sm font-extrabold text-violet-950 mb-4 flex items-center gap-2"><Users size={16} className="text-violet-600" /> Consultores da Loja</h2>
 
-          <div className="flex flex-wrap gap-2 mb-4">
-            <input value={novoNome} onChange={(e) => setNovoNome(e.target.value)} placeholder="Nome do novo consultor"
-              className="flex-1 min-w-[200px] rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-950 outline-none focus:border-violet-400" />
-            <button onClick={handleAdicionar} className="flex items-center gap-1.5 rounded-xl bg-violet-600 text-white px-4 py-2 text-xs font-bold hover:bg-violet-700 transition">
-              <Plus size={13} /> Adicionar
-            </button>
+          <div className="rounded-xl bg-violet-50 border border-violet-100 px-4 py-3 mb-4">
+            <div className="flex flex-wrap gap-2 mb-2">
+              <input value={novoNome} onChange={(e) => setNovoNome(e.target.value)} placeholder="Nome do novo consultor"
+                className="flex-1 min-w-[200px] rounded-lg border border-violet-100 bg-white px-3 py-2 text-xs text-violet-950 outline-none focus:border-violet-400" />
+              <button onClick={handleAdicionar} className="flex items-center gap-1.5 rounded-xl bg-violet-600 text-white px-4 py-2 text-xs font-bold hover:bg-violet-700 transition">
+                <Plus size={13} /> Adicionar
+              </button>
+            </div>
+            <label className="flex items-center gap-2 text-[11px] text-violet-600 cursor-pointer">
+              <input type="checkbox" checked={novoExterno} onChange={(e) => setNovoExterno(e.target.checked)} className="accent-violet-600" />
+              Consultor externo (venda repassada — <b>não entra</b> na meta/produção da loja)
+            </label>
           </div>
 
           <div className="space-y-2.5">
             {consultores.map((c) => (
               <div key={c.id} className="rounded-xl border border-violet-100 px-4 py-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-3">
                     <label className="relative cursor-pointer group">
                       <Avatar nome={c.nome} foto={c.foto} size={40} />
@@ -1930,13 +2038,16 @@ function TelaConfiguracoes({ diasUteisMes, setDiasUteisMes, diasUteisPassados, s
                       </span>
                     </label>
                     <div>
-                      <p className="text-sm font-semibold text-violet-950">{c.nome}</p>
+                      <p className="text-sm font-semibold text-violet-950 flex items-center gap-1.5">
+                        {c.nome}
+                        {c.externo && <span className="text-[9px] font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-full">EXTERNO</span>}
+                      </p>
                       <p className="text-[10px] text-slate-400">Toque na foto para alterar</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <button onClick={() => setConsultorExpandido(consultorExpandido === c.id ? null : c.id)} className="text-[11px] font-semibold text-violet-600 hover:underline">
-                      Meta individual
+                      Detalhes
                     </button>
                     <button onClick={() => removerConsultor(c.id)} className="w-7 h-7 rounded-lg border border-red-100 flex items-center justify-center text-red-500 hover:bg-red-50 transition">
                       <Trash2 size={12} />
@@ -1944,12 +2055,24 @@ function TelaConfiguracoes({ diasUteisMes, setDiasUteisMes, diasUteisPassados, s
                   </div>
                 </div>
                 {consultorExpandido === c.id && (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 pt-3 border-t border-violet-50">
-                    {["creditoPessoal", "consignado", "clt", "antecipacao"].map((pid) => (
-                      <Campo key={pid} label={{ creditoPessoal: "Créd. Pessoal", consignado: "Consignado", clt: "CLT", antecipacao: "Antecipação" }[pid]}>
-                        <input type="number" min="0" value={(metasIndividuais[c.id] || {})[pid] || 0} onChange={(e) => atualizarMetaIndividual(c.id, pid, e.target.value)} className={inputClass + " mb-0"} />
-                      </Campo>
-                    ))}
+                  <div className="mt-3 pt-3 border-t border-violet-50 space-y-3">
+                    <label className="flex items-center gap-2 text-[11px] text-violet-600 cursor-pointer">
+                      <input type="checkbox" checked={!!c.externo} onChange={(e) => atualizarConsultorCampo(c.id, "externo", e.target.checked)} className="accent-violet-600" />
+                      Consultor externo (não entra na meta/produção da loja)
+                    </label>
+                    <Campo label="PIN de acesso (4 dígitos)">
+                      <input type="text" inputMode="numeric" maxLength={6} value={c.pin || ""} onChange={(e) => atualizarConsultorCampo(c.id, "pin", e.target.value.replace(/\D/g, ""))}
+                        placeholder="Ex.: 1234" className={inputClass + " mb-0 max-w-[140px]"} />
+                    </Campo>
+                    {!c.externo && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        {["creditoPessoal", "consignado", "clt", "antecipacao"].map((pid) => (
+                          <Campo key={pid} label={{ creditoPessoal: "Créd. Pessoal", consignado: "Consignado", clt: "CLT", antecipacao: "Antecipação" }[pid]}>
+                            <input type="number" min="0" value={(metasIndividuais[c.id] || {})[pid] || 0} onChange={(e) => atualizarMetaIndividual(c.id, pid, e.target.value)} className={inputClass + " mb-0"} />
+                          </Campo>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1965,10 +2088,10 @@ function TelaConfiguracoes({ diasUteisMes, setDiasUteisMes, diasUteisPassados, s
           <p className="text-[11px] text-slate-400 mb-4">Esse é o mesmo calendário usado na Matinal — alterar aqui atualiza lá também.</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-md">
             <Campo label="Dias úteis no mês">
-              <input type="number" min={1} value={diasUteisMes} onChange={(e) => setDiasUteisMes(Math.max(1, Number(e.target.value) || 1))} className={inputClass} />
+              <input type="number" min={1} value={diasUteisMes} onChange={(e) => salvarConfig(Math.max(1, Number(e.target.value) || 1))} className={inputClass} />
             </Campo>
             <Campo label="Dias úteis já passados">
-              <input type="number" min={0} value={diasUteisPassados} onChange={(e) => setDiasUteisPassados(Math.max(0, Number(e.target.value) || 0))} className={inputClass} />
+              <input type="number" min={0} value={diasUteisPassados} onChange={(e) => salvarConfig(undefined, Math.max(0, Number(e.target.value) || 0))} className={inputClass} />
             </Campo>
           </div>
           <div className="rounded-xl bg-violet-50 border border-violet-100 px-4 py-3 mt-4 text-[11px] text-violet-500">
@@ -2512,6 +2635,7 @@ function TelaRadarComercial({ producoes, oportunidadesManuais, salvarOportunidad
   const comOferta = todasOportunidades.filter((o) => o.oferta).length;
   const liberamEm15 = todasOportunidades.filter((o) => { const d = diasAte(o.liberaEm); return d !== null && d >= 0 && d <= 15; }).length;
   const valorPotencialTotal = todasOportunidades.reduce((acc, o) => acc + (o.valorPotencial || 0), 0);
+  const prioridadeAltaTotal = todasOportunidades.filter((o) => { const d = diasAte(o.liberaEm); return d !== null && d <= 7; }).length;
   const proximaLiberacao = [...todasOportunidades].filter(o => o.liberaEm).sort((a, b) => diasAte(a.liberaEm) - diasAte(b.liberaEm))[0];
 
   async function adicionarClienteManual() {
@@ -2556,9 +2680,9 @@ function TelaRadarComercial({ producoes, oportunidadesManuais, salvarOportunidad
           <Kpi icon={<CheckCircle2 size={16} />} label="COM OFERTA" value={`${comOferta}`} sub="Toque para filtrar" accent="orange" ativo={filtroRapido === "oferta"} />
         </button>
         <button onClick={() => setFiltroRapido(filtroRapido === "proximos15" ? null : "proximos15")} className="text-left">
-          <Kpi icon={<Clock size={16} />} label="LIBERAM EM 15 DIAS" value={`${liberamEm15}`} sub="Toque para filtrar" ativo={filtroRapido === "proximos15"} />
+          <Kpi icon={<Clock size={16} />} label="CLIENTES: REFIN EM 15 DIAS" value={`${liberamEm15}`} sub="Toque para ver esses clientes" ativo={filtroRapido === "proximos15"} />
         </button>
-        <Kpi icon={<TrendingUp size={16} />} label="VALOR POTENCIAL" value={formatBRL(valorPotencialTotal)} sub="Soma das oportunidades" accent="orange" />
+        <Kpi icon={<AlertTriangle size={16} />} label="PRIORIDADE ALTA" value={`${prioridadeAltaTotal}`} sub="Refin em até 7 dias — ligar logo" accent="orange" />
       </div>
 
       {filtroRapido && (
@@ -2576,7 +2700,8 @@ function TelaRadarComercial({ producoes, oportunidadesManuais, salvarOportunidad
         <div className="rounded-2xl bg-violet-600 p-4 flex items-start gap-3 text-white">
           <div className="w-9 h-9 rounded-xl bg-white/15 flex items-center justify-center shrink-0"><Bot size={18} /></div>
           <p className="text-xs sm:text-sm text-violet-50 leading-relaxed">
-            <b>Dica do Pulse:</b> {proximaLiberacao.cliente} pode liberar {formatBRL(proximaLiberacao.valorPotencial)} em {formatarDataBR(proximaLiberacao.liberaEm)}. Que tal falar com ele(a) hoje?
+            <b>Dica do Pulse:</b> o cliente <b>{proximaLiberacao.cliente}</b> {proximaLiberacao.cpf ? <>(CPF {proximaLiberacao.cpf}) </> : null}
+            está próximo de liberar um refinanciamento, em {formatarDataBR(proximaLiberacao.liberaEm)}. Que tal falar com ele(a) hoje?
           </p>
         </div>
       )}
@@ -2658,7 +2783,7 @@ function TelaRadarComercial({ producoes, oportunidadesManuais, salvarOportunidad
               <thead>
                 <tr className="text-left text-[10px] font-bold tracking-wide text-slate-400 border-b border-violet-100">
                   <th className="py-2 pr-3">Cliente</th><th className="py-2 pr-3">CPF</th><th className="py-2 pr-3">Produto</th>
-                  <th className="py-2 pr-3">Valor Potencial</th><th className="py-2 pr-3">Libera em</th><th className="py-2 pr-3">Oferta</th>
+                  <th className="py-2 pr-3">Valor do Contrato</th><th className="py-2 pr-3">Refin previsto para</th><th className="py-2 pr-3">Oferta</th>
                   <th className="py-2 pr-3">Prioridade</th><th className="py-2 pr-3">Consultor</th><th className="py-2 pl-3 text-right">Ações</th>
                 </tr>
               </thead>
@@ -2805,23 +2930,25 @@ function MiniGauge({ pct, color = "#7C3AED" }) {
 function FiltroChip({ label, active, onClick }) {
   return <button onClick={onClick} className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${active ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-500 border-violet-100 hover:border-violet-300"}`}>{label}</button>;
 }
-function ElegibilidadePanel({ contratosMesConsultorProduto, consultores }) {
+function ElegibilidadePanel({ contratosMesConsultorProduto, consultores, superContasUnicasMesConsultor }) {
   return (
     <div className="rounded-2xl border border-violet-100 bg-white p-4 sm:p-5">
       <div className="flex items-center gap-2 mb-1"><ClipboardList size={17} className="text-violet-600" /><h3 className="font-bold text-violet-950 text-sm">Elegibilidade ao Comissionamento</h3></div>
-      <p className="text-[11px] text-violet-300 mb-4">Contagem por número de contratos no mês — não considera o valor em R$.</p>
+      <p className="text-[11px] text-violet-300 mb-4">Contagem por número de contratos no mês — não considera o valor em R$. SuperConta conta por CPF único (cliente repetido não conta 2x).</p>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[520px]">
-          <thead><tr className="text-left text-[10px] font-bold tracking-wide text-slate-400"><th className="py-2 pr-3">CONSULTORA</th><th className="py-2 px-3 text-center">SEGURO (meta {ELEGIBILIDADE.seguro})</th><th className="py-2 px-3 text-center">CONSIGNADO (meta {ELEGIBILIDADE.consignado})</th><th className="py-2 px-3 text-center">CLT (meta {ELEGIBILIDADE.clt})</th><th className="py-2 pl-3 text-center">SITUAÇÃO</th></tr></thead>
+        <table className="w-full text-sm min-w-[620px]">
+          <thead><tr className="text-left text-[10px] font-bold tracking-wide text-slate-400"><th className="py-2 pr-3">CONSULTORA</th><th className="py-2 px-3 text-center">SUPERCONTA (meta {ELEGIBILIDADE.superConta})</th><th className="py-2 px-3 text-center">SEGURO (meta {ELEGIBILIDADE.seguro})</th><th className="py-2 px-3 text-center">CONSIGNADO (meta {ELEGIBILIDADE.consignado})</th><th className="py-2 px-3 text-center">CLT (meta {ELEGIBILIDADE.clt})</th><th className="py-2 pl-3 text-center">SITUAÇÃO</th></tr></thead>
           <tbody>
             {consultores.map((c) => {
+              const superConta = superContasUnicasMesConsultor(c.id);
               const seguro = contratosMesConsultorProduto(c.id, "seguro");
               const consignado = contratosMesConsultorProduto(c.id, "consignado");
               const clt = contratosMesConsultorProduto(c.id, "clt");
-              const elegivel = seguro >= ELEGIBILIDADE.seguro && consignado >= ELEGIBILIDADE.consignado && clt >= ELEGIBILIDADE.clt;
+              const elegivel = superConta >= ELEGIBILIDADE.superConta && seguro >= ELEGIBILIDADE.seguro && consignado >= ELEGIBILIDADE.consignado && clt >= ELEGIBILIDADE.clt;
               return (
                 <tr key={c.id} className="border-t border-violet-50">
                   <td className="py-2.5 pr-3 font-medium text-violet-950">{c.nome}</td>
+                  <td className="py-2.5 px-3 text-center"><ContagemBadge atual={superConta} meta={ELEGIBILIDADE.superConta} /></td>
                   <td className="py-2.5 px-3 text-center"><ContagemBadge atual={seguro} meta={ELEGIBILIDADE.seguro} /></td>
                   <td className="py-2.5 px-3 text-center"><ContagemBadge atual={consignado} meta={ELEGIBILIDADE.consignado} /></td>
                   <td className="py-2.5 px-3 text-center"><ContagemBadge atual={clt} meta={ELEGIBILIDADE.clt} /></td>
