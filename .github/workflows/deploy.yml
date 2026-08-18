@@ -1,4 +1,4 @@
-name: Publicar no GitHub Pages
+﻿name: Publicar no GitHub Pages
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
 
-  - name: Baixar código
+  - name: Baixar codigo
     uses: actions/checkout@v4
 
   - name: Configurar Node.js
@@ -27,7 +27,7 @@ jobs:
     with:
       node-version: 20
 
-  - name: Instalar dependências
+  - name: Instalar dependencias
     run: npm install
 
   - name: Build do projeto
