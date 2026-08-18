@@ -1,4 +1,4 @@
-﻿name: Publicar no GitHub Pages
+name: Publicar no GitHub Pages
 
 on:
   push:
@@ -18,32 +18,32 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v4
 
-  - name: Baixar codigo
-    uses: actions/checkout@v4
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-  - name: Configurar Node.js
-    uses: actions/setup-node@v4
-    with:
-      node-version: 20
+      - name: Instalar dependencias
+        run: npm install
 
-  - name: Instalar dependencias
-    run: npm install
+      - name: Build do projeto
+        run: npm run build
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
 
-  - name: Build do projeto
-    run: npm run build
-    env:
-      VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
-      VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
-      VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
-      VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
-      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
-      VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+      - name: Preparar arquivos para o Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
 
-  - name: Preparar arquivos para o Pages
-    uses: actions/upload-pages-artifact@v3
-    with:
-      path: ./dist
   deploy:
     needs: build
     runs-on: ubuntu-latest
@@ -51,7 +51,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-
-  - name: Publicar no GitHub Pages
-    id: deployment
-    uses: actions/deploy-pages@v4
+      - name: Publicar no GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
