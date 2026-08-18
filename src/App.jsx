@@ -254,6 +254,18 @@ export default function RadarSistema() {
     setMetaLojaPorProduto(novasMetasLoja);
     await persistir(METAS_LOJA_KEY, novasMetasLoja);
   }
+  // salva os 4 produtos de uma vez só — evita o bug de chamadas sequenciais lerem
+  // o mesmo estado "velho" e se sobrescreverem umas às outras
+  async function atualizarMetaLojaTodos(novoObjeto) {
+    const limpo = {
+      creditoPessoal: Number(novoObjeto.creditoPessoal) || 0,
+      consignado: Number(novoObjeto.consignado) || 0,
+      clt: Number(novoObjeto.clt) || 0,
+      antecipacao: Number(novoObjeto.antecipacao) || 0,
+    };
+    setMetaLojaPorProduto(limpo);
+    await persistir(METAS_LOJA_KEY, limpo);
+  }
   const metaLojaMix = ["creditoPessoal", "consignado", "clt", "antecipacao"].reduce((s, p) => s + metaLojaProdutoTotal(p), 0);
 
   async function salvarConfig(novoDiasUteisMes, novoDiasUteisPassados, novoMetaSeguroUnid, novoSupervisorPin) {
@@ -274,7 +286,7 @@ export default function RadarSistema() {
     producoes, acionamentos, oportunidadesManuais, loading, diasUteisMes, diasUteisPassados,
     consultores, consultoresLoja, adicionarConsultor, removerConsultor, atualizarFotoConsultor, atualizarConsultorCampo,
     metasIndividuais, atualizarMetaIndividual, metaSeguroUnid,
-    metaLojaPorProduto, atualizarMetaLojaProduto, metaLojaMix,
+    metaLojaPorProduto, atualizarMetaLojaProduto, atualizarMetaLojaTodos, metaLojaMix,
     salvarProducoes, salvarAcionamentos, salvarOportunidades, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto,
     superContasUnicasMesConsultor, metaIndividualConsultorProduto, metaIndividualConsultorMix, metaLojaProdutoTotal,
     supervisorPin, salvarConfig,
@@ -511,7 +523,7 @@ function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores, superv
               <div className="flex flex-col items-center text-center gap-1.5">
                 <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-100 to-violet-200 flex items-center justify-center shadow-sm"><Users size={18} className="text-violet-600" /></div>
                 <p className="text-[9px] font-bold tracking-wide text-slate-400">CONSULTORES</p>
-                <p className="text-sm font-extrabold text-violet-950">{consultores.length}</p>
+                <p className="text-sm font-extrabold text-violet-950">{consultores.filter((c) => !c.externo).length}</p>
                 <p className="text-[10px] text-violet-300">Ativos</p>
               </div>
             </div>
@@ -1063,7 +1075,8 @@ function TelaMatinal({ producoes, diasUteisMes, diasUteisPassados, salvarConfig,
 // ============================================================
 // TELA: PAINEL ESTRATÉGICO
 // ============================================================
-function TelaPainelEstrategico({ producoes, diasUteisMes, diasUteisPassados, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto, loading, consultores, metaIndividualConsultorProduto, metaIndividualConsultorMix, metaLojaProdutoTotal, metaLojaMix, metaSeguroUnid }) {
+function TelaPainelEstrategico({ producoes, diasUteisMes, diasUteisPassados, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto, loading, consultoresLoja, metaIndividualConsultorProduto, metaIndividualConsultorMix, metaLojaProdutoTotal, metaLojaMix, metaSeguroUnid }) {
+  const consultores = consultoresLoja;
   const diasUteisRestantes = Math.max(diasUteisMes - diasUteisPassados, 0);
   const ritmoIdeal = diasUteisMes > 0 ? Math.round((diasUteisPassados / diasUteisMes) * 100) : 0;
   const metaMixMensalTotal = metaLojaMix;
@@ -1297,7 +1310,7 @@ function TelaPainelEstrategico({ producoes, diasUteisMes, diasUteisPassados, tot
 // ============================================================
 // TELA: PARCIAL DO DIA
 // ============================================================
-function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultores, metaLojaProdutoTotal, metaLojaMix }) {
+function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultores, consultoresLoja, metaLojaProdutoTotal, metaLojaMix }) {
   const [periodo, setPeriodo] = useState("hoje");
   const [produtoFiltro, setProdutoFiltro] = useState("todos");
   const [fConsultor, setFConsultor] = useState("");
@@ -1336,14 +1349,14 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
     return (metaLojaProdutoTotal(produtoId) / DIAS_UTEIS_MES_PADRAO) * fatorPeriodo;
   }
   function realizadoProduto(produtoId) {
-    if (produtoId === "mix") return consultores.reduce((acc, c) => acc + totalConsultorMix(c.id), 0);
-    return consultores.reduce((acc, c) => acc + totalConsultorProduto(c.id, produtoId), 0);
+    if (produtoId === "mix") return consultoresLoja.reduce((acc, c) => acc + totalConsultorMix(c.id), 0);
+    return consultoresLoja.reduce((acc, c) => acc + totalConsultorProduto(c.id, produtoId), 0);
   }
 
   const producaoLojaPeriodo = realizadoProduto("mix");
   const metaLojaPeriodo = metaProduto("mix");
   const pctLoja = metaLojaPeriodo > 0 ? Math.round((producaoLojaPeriodo / metaLojaPeriodo) * 100) : 0;
-  const metaAcionamentosLoja = META_ACIONAMENTOS_DIA_CONSULTOR * consultores.length * fatorPeriodo;
+  const metaAcionamentosLoja = META_ACIONAMENTOS_DIA_CONSULTOR * consultoresLoja.length * fatorPeriodo;
   const totalAcionamentos = acionamentosPeriodo.reduce((s, a) => s + a.quantidade, 0);
   const pctAcionamentos = metaAcionamentosLoja > 0 ? Math.round((totalAcionamentos / metaAcionamentosLoja) * 100) : 0;
 
@@ -1380,7 +1393,7 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
       const pct = meta > 0 ? (real / meta) * 100 : 0;
       if (pct < 50) lista.push({ cor: "#EF4444", texto: `${p.nome} abaixo do esperado — realizado ${Math.round(pct)}% da meta do período.` });
     });
-    consultores.forEach((c) => {
+    consultoresLoja.forEach((c) => {
       const falta = META_ACIONAMENTOS_DIA_CONSULTOR * fatorPeriodo - acionamentosConsultor(c.id);
       if (falta > 0) lista.push({ cor: "#F5A623", texto: `Faltam ${falta} acionamentos de ${c.nome} para a meta do período.` });
     });
@@ -1451,9 +1464,11 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {consultores.map((c) => {
                 const totalMix = totalConsultorMix(c.id);
-                const metaMix = metaProduto("mix") / consultores.length;
+                const metaMix = metaProduto("mix") / (consultoresLoja.length || 1);
                 const pctMix = metaMix > 0 ? Math.round((totalMix / metaMix) * 100) : 0;
-                const status = pctMix >= 70 ? { label: "No ritmo", color: "#22C55E" } : pctMix >= 40 ? { label: "Atenção", color: "#F5A623" } : { label: "Abaixo", color: "#EF4444" };
+                const status = c.externo
+                  ? { label: "Externo", color: "#8B74D6" }
+                  : pctMix >= 70 ? { label: "No ritmo", color: "#22C55E" } : pctMix >= 40 ? { label: "Atenção", color: "#F5A623" } : { label: "Abaixo", color: "#EF4444" };
                 const chamadas = acionamentosConsultor(c.id);
                 const metaChamadas = META_ACIONAMENTOS_DIA_CONSULTOR * fatorPeriodo;
                 const pctChamadas = metaChamadas > 0 ? Math.round((chamadas / metaChamadas) * 100) : 0;
@@ -1467,28 +1482,31 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
                       </div>
                       <span className="flex items-center gap-1 text-[11px] font-semibold" style={{ color: status.color }}><span className="w-1.5 h-1.5 rounded-full" style={{ background: status.color }} />{status.label}</span>
                     </div>
+                    {c.externo && (
+                      <p className="text-[10px] text-violet-400 -mt-2 mb-2">Consultor externo — produção não entra na meta/produção da loja.</p>
+                    )}
                     <table className="w-full text-[11px] mb-3">
-                      <thead><tr className="text-slate-400"><th className="text-left font-semibold pb-1">Produto</th><th className="text-right font-semibold pb-1">Meta</th><th className="text-right font-semibold pb-1">Realiz.</th><th className="text-right font-semibold pb-1">%</th></tr></thead>
+                      <thead><tr className="text-slate-400"><th className="text-left font-semibold pb-1">Produto</th>{!c.externo && <th className="text-right font-semibold pb-1">Meta</th>}<th className="text-right font-semibold pb-1">{c.externo ? "Vendido" : "Realiz."}</th>{!c.externo && <th className="text-right font-semibold pb-1">%</th>}</tr></thead>
                       <tbody>
                         {produtosMostrar.map((p) => {
-                          const metaP = metaProduto(p.id) / consultores.length;
+                          const metaP = metaProduto(p.id) / (consultoresLoja.length || 1);
                           const realP = totalConsultorProduto(c.id, p.id);
                           const pctP = metaP > 0 ? Math.round((realP / metaP) * 100) : 0;
                           const dot = pctP >= 100 ? "#22C55E" : pctP >= 50 ? "#F5A623" : "#EF4444";
                           return (
                             <tr key={p.id} className="border-t border-violet-50">
                               <td className="py-1 text-violet-950">{p.nome}</td>
-                              <td className="py-1 text-right text-slate-500">{formatBRL(metaP)}</td>
+                              {!c.externo && <td className="py-1 text-right text-slate-500">{formatBRL(metaP)}</td>}
                               <td className="py-1 text-right font-semibold text-violet-950">{formatBRL(realP)}</td>
-                              <td className="py-1 text-right font-bold" style={{ color: dot }}>{pctP}%</td>
+                              {!c.externo && <td className="py-1 text-right font-bold" style={{ color: dot }}>{pctP}%</td>}
                             </tr>
                           );
                         })}
                         <tr className="border-t-2 border-violet-200">
                           <td className="py-1 font-bold text-violet-950">Total (Mix)</td>
-                          <td className="py-1 text-right font-bold text-slate-500">{formatBRL(metaMix)}</td>
+                          {!c.externo && <td className="py-1 text-right font-bold text-slate-500">{formatBRL(metaMix)}</td>}
                           <td className="py-1 text-right font-bold text-violet-600">{formatBRL(totalMix)}</td>
-                          <td className="py-1 text-right font-bold text-orange-500">{pctMix}%</td>
+                          {!c.externo && <td className="py-1 text-right font-bold text-orange-500">{pctMix}%</td>}
                         </tr>
                       </tbody>
                     </table>
@@ -1836,7 +1854,7 @@ function Campo({ label, children }) {
 // ============================================================
 // TELA: CONFIGURAÇÕES
 // ============================================================
-function TelaConfiguracoes({ diasUteisMes, diasUteisPassados, salvarConfig, consultores, adicionarConsultor, removerConsultor, atualizarFotoConsultor, atualizarConsultorCampo, metasIndividuais, atualizarMetaIndividual, metaSeguroUnid, metaLojaPorProduto, atualizarMetaLojaProduto, metaLojaMix, metaIndividualConsultorMix, supervisorPin, superContasUnicasMesConsultor }) {
+function TelaConfiguracoes({ diasUteisMes, diasUteisPassados, salvarConfig, consultores, adicionarConsultor, removerConsultor, atualizarFotoConsultor, atualizarConsultorCampo, metasIndividuais, atualizarMetaIndividual, metaSeguroUnid, metaLojaPorProduto, atualizarMetaLojaProduto, atualizarMetaLojaTodos, metaLojaMix, metaIndividualConsultorMix, supervisorPin, superContasUnicasMesConsultor }) {
   const [aba, setAba] = useState("metaLoja");
   const [metaLojaRascunho, setMetaLojaRascunho] = useState(metaLojaPorProduto);
   const [seguroRascunho, setSeguroRascunho] = useState(metaSeguroUnid);
@@ -1855,9 +1873,7 @@ function TelaConfiguracoes({ diasUteisMes, diasUteisPassados, salvarConfig, cons
   ];
 
   function salvarMetaLoja() {
-    ["creditoPessoal", "consignado", "clt", "antecipacao"].forEach((pid) => {
-      atualizarMetaLojaProduto(pid, metaLojaRascunho[pid]);
-    });
+    atualizarMetaLojaTodos(metaLojaRascunho);
     salvarConfig(undefined, undefined, Number(seguroRascunho) || 0);
     setSalvo("loja");
     setTimeout(() => setSalvo(null), 3000);
@@ -1911,6 +1927,20 @@ function TelaConfiguracoes({ diasUteisMes, diasUteisPassados, salvarConfig, cons
             <Campo label="Telefone"><input placeholder="(17) 0000-0000" className={inputClass} /></Campo>
           </div>
           <p className="text-[11px] text-violet-300 mt-2">Esses campos ainda são apenas visuais — se você quiser, posso conectá-los de verdade em uma próxima etapa.</p>
+
+          <div className="mt-6 pt-6 border-t border-violet-100">
+            <h2 className="text-sm font-extrabold text-violet-950 mb-1 flex items-center gap-2"><ShieldCheck size={16} className="text-violet-600" /> Seu PIN de Acesso (Supervisor)</h2>
+            <p className="text-[11px] text-slate-400 mb-3">Esse é o PIN que você usa pra entrar como Supervisor. Enquanto estiver em branco, qualquer PIN funciona.</p>
+            <div className="flex items-end gap-3">
+              <Campo label="PIN (4 a 6 dígitos)">
+                <input type="text" inputMode="numeric" maxLength={6} value={pinRascunho} onChange={(e) => setPinRascunho(e.target.value.replace(/\D/g, ""))}
+                  placeholder="Ex: 1234" className={inputClass + " mb-0 max-w-[160px]"} />
+              </Campo>
+              <button onClick={() => { salvarConfig(undefined, undefined, undefined, pinRascunho); setSalvo("pin"); setTimeout(() => setSalvo(null), 3000); }}
+                className="rounded-xl bg-violet-600 text-white px-4 py-2.5 text-xs font-bold hover:bg-violet-700 transition">Salvar PIN</button>
+            </div>
+            {salvo === "pin" && <div className="mt-3 text-xs font-medium rounded-lg px-3 py-2 bg-green-50 text-green-700 flex items-center gap-2 max-w-xs"><CheckCircle2 size={14} /> PIN atualizado!</div>}
+          </div>
         </div>
       )}
 
@@ -2625,6 +2655,7 @@ function TelaRadarComercial({ producoes, oportunidadesManuais, salvarOportunidad
     if (filtroPrioridade !== "todas" && prio.label !== filtroPrioridade) return false;
     if (filtroRapido === "oferta" && !o.oferta) return false;
     if (filtroRapido === "proximos15" && !(dias !== null && dias >= 0 && dias <= 15)) return false;
+    if (filtroRapido === "prioridadeAlta" && !(dias !== null && dias <= 7)) return false;
     if (busca.trim()) {
       const q = busca.toLowerCase();
       if (!o.cliente?.toLowerCase().includes(q) && !o.cpf?.includes(q)) return false;
@@ -2682,13 +2713,15 @@ function TelaRadarComercial({ producoes, oportunidadesManuais, salvarOportunidad
         <button onClick={() => setFiltroRapido(filtroRapido === "proximos15" ? null : "proximos15")} className="text-left">
           <Kpi icon={<Clock size={16} />} label="CLIENTES: REFIN EM 15 DIAS" value={`${liberamEm15}`} sub="Toque para ver esses clientes" ativo={filtroRapido === "proximos15"} />
         </button>
-        <Kpi icon={<AlertTriangle size={16} />} label="PRIORIDADE ALTA" value={`${prioridadeAltaTotal}`} sub="Refin em até 7 dias — ligar logo" accent="orange" />
+        <button onClick={() => setFiltroRapido(filtroRapido === "prioridadeAlta" ? null : "prioridadeAlta")} className="text-left">
+          <Kpi icon={<AlertTriangle size={16} />} label="PRIORIDADE ALTA" value={`${prioridadeAltaTotal}`} sub="Toque para ver esses clientes" accent="orange" ativo={filtroRapido === "prioridadeAlta"} />
+        </button>
       </div>
 
       {filtroRapido && (
         <div className="flex items-center gap-2 -mt-3">
           <span className="text-[11px] text-violet-500">
-            Filtrando por: <b>{filtroRapido === "oferta" ? "Com oferta disponível" : "Liberam em até 15 dias"}</b>
+            Filtrando por: <b>{filtroRapido === "oferta" ? "Com oferta disponível" : filtroRapido === "prioridadeAlta" ? "Prioridade alta (refin em até 7 dias)" : "Liberam em até 15 dias"}</b>
           </span>
           <button onClick={() => setFiltroRapido(null)} className="text-[11px] text-violet-600 font-semibold flex items-center gap-1 hover:underline">
             <X size={12} /> Limpar
