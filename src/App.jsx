@@ -4,10 +4,10 @@ import {
   AlertTriangle, Trophy, Target, Sparkles, Bell,
   Home, Package, TrendingUp, BarChart2, Clock, ClipboardCheck,
   CheckCircle2, XCircle, ClipboardList, Medal, PartyPopper, ArrowUp, ArrowDown,
-  Wallet, PieChart, Landmark, Shirt, Zap, ShieldCheck,
+  Wallet, PieChart as PieChartIcon, Landmark, Shirt, Zap, ShieldCheck,
   User, CreditCard, Briefcase, Search, RotateCcw, Plus, Pencil, Trash2, AlertCircle,
   Phone, MessageCircle, MoreHorizontal, ImageIcon, ArrowLeftRight, Users, Filter, X,
-  Download, Upload, Copy, Shield, LogOut, Eye, EyeOff, ArrowRight,
+  Download, Upload, Copy, Shield, LogOut, Eye, EyeOff, ShieldCheck, ArrowRight,
   FileSpreadsheet, FileText, Printer, Share2, SlidersHorizontal
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, BarChart, Bar, Legend } from "recharts";
@@ -748,7 +748,7 @@ function TelaMatinal({ producoes, diasUteisMes, setDiasUteisMes, diasUteisPassad
 
   const PRODUTOS_META = [
     { id: "creditoPessoal", nome: "Crédito Pessoal", icon: Wallet },
-    { id: "mix", nome: "Mix", icon: PieChart, isRollup: true },
+    { id: "mix", nome: "Mix", icon: PieChartIcon, isRollup: true },
     { id: "consignado", nome: "Consignado", icon: Landmark },
     { id: "clt", nome: "CLT", icon: Shirt },
     { id: "antecipacao", nome: "Antecipação", icon: Zap },
@@ -1001,7 +1001,7 @@ function TelaPainelEstrategico({ producoes, diasUteisMes, diasUteisPassados, tot
 
   const PRODUTOS_DESEMPENHO = [
     { id: "creditoPessoal", nome: "Crédito Pessoal", icon: Wallet },
-    { id: "mix", nome: "Mix", icon: PieChart, isRollup: true },
+    { id: "mix", nome: "Mix", icon: PieChartIcon, isRollup: true },
     { id: "consignado", nome: "Consignado", icon: Landmark },
     { id: "clt", nome: "CLT (Consignado Privado)", icon: Shirt },
     { id: "antecipacao", nome: "Antecipações", icon: Zap },
@@ -1226,7 +1226,7 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
     { id: "consignado", nome: "Consignado", icon: Landmark },
     { id: "clt", nome: "CLT", icon: Shirt },
     { id: "antecipacao", nome: "Antecipação", icon: Zap },
-    { id: "mix", nome: "Mix", icon: PieChart, isRollup: true },
+    { id: "mix", nome: "Mix", icon: PieChartIcon, isRollup: true },
   ];
 
   const hoje = todayISO();
