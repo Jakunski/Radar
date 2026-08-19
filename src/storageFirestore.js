@@ -21,8 +21,18 @@ function ativarStorageFirestore() {
 
   window.storage = {
     async get(key) {
-      const ref = doc(db, COLLECTION, key);
-      const snap = await getDoc(ref);
+      let snap;
+      try {
+        const ref = doc(db, COLLECTION, key);
+        snap = await getDoc(ref);
+      } catch (e) {
+        // Erro de rede/conexão (offline, instável, timeout etc). Sinalizamos
+        // isso separado de "não existe" pra quem chama poder tentar de novo
+        // em vez de assumir que os dados nunca existiram.
+        const erroDeRede = new Error(`Falha de conexão ao buscar "${key}": ${e?.message || e}`);
+        erroDeRede.isNetworkError = true;
+        throw erroDeRede;
+      }
       if (!snap.exists()) {
         throw new Error(`Chave "${key}" não encontrada no Firestore.`);
       }

@@ -53,6 +53,24 @@ function saudacao() {
   if (h < 18) return "Boa tarde";
   return "Boa noite";
 }
+// Entende 2.500,00 (BR) / 2500,00 / 2,500.00 (US) / 2500 — sem se confundir com qual é o separador decimal
+function parseValorMonetario(str) {
+  if (!str) return 0;
+  let s = String(str).trim().replace(/[^\d.,]/g, "");
+  if (!s) return 0;
+  const lastComma = s.lastIndexOf(",");
+  const lastDot = s.lastIndexOf(".");
+  if (lastComma > -1 && lastDot > -1) {
+    if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", "."); // BR: 2.500,00
+    else s = s.replace(/,/g, ""); // US: 2,500.00
+  } else if (lastComma > -1) {
+    s = s.replace(",", "."); // só vírgula → decimal BR: 2500,00
+  }
+  return Number(s) || 0;
+}
+function formatBRLCurto(v) {
+  return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
+}
 function formatBRL(v) {
   return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -91,6 +109,7 @@ export default function RadarSistema() {
   const [acionamentos, setAcionamentos] = useState([]);
   const [oportunidadesManuais, setOportunidadesManuais] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [erroCarregamento, setErroCarregamento] = useState(false);
   const [diasUteisMes, setDiasUteisMes] = useState(DIAS_UTEIS_MES_PADRAO);
   const [diasUteisPassados, setDiasUteisPassados] = useState(DIAS_UTEIS_PASSADOS_PADRAO);
   const [consultores, setConsultores] = useState(CONSULTORES_PADRAO);
@@ -101,48 +120,82 @@ export default function RadarSistema() {
   });
   const [metaSeguroUnid, setMetaSeguroUnid] = useState(META_SEGURO_UNID_PADRAO);
   const [supervisorPin, setSupervisorPin] = useState("");
+  const [supervisorFoto, setSupervisorFoto] = useState(null);
   const [metaLojaPorProduto, setMetaLojaPorProduto] = useState(() => {
     const obj = {};
     Object.keys(METAS_MENSAIS_PADRAO).forEach((pid) => { obj[pid] = METAS_MENSAIS_PADRAO[pid] * CONSULTORES_PADRAO.length; });
     return obj;
   });
 
+  // Busca uma chave tentando algumas vezes se for erro de CONEXÃO
+  // (rede instável, offline, timeout). Erro de "não existe" não tenta de
+  // novo — aí sim é porque a chave nunca foi salva. Isso evita que uma
+  // falha momentânea de internet faça a tela parecer "vazia" quando na
+  // verdade os dados continuam salvos no banco.
+  async function buscarComRetentativa(key, tentativas = 4) {
+    for (let i = 0; i < tentativas; i++) {
+      try {
+        return await window.storage.get(key, false);
+      } catch (e) {
+        if (e?.isNetworkError && i < tentativas - 1) {
+          await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+          continue;
+        }
+        if (e?.isNetworkError) throw e; // esgotou as tentativas
+        return null; // não existe mesmo — tudo bem, é primeira vez
+      }
+    }
+  }
+
   useEffect(() => {
     (async () => {
+      let falhaDeConexao = false;
       try {
-        const r1 = await window.storage.get(STORAGE_KEY, false);
+        const r1 = await buscarComRetentativa(STORAGE_KEY);
         setProducoes(r1 ? JSON.parse(r1.value) : []);
-      } catch (e) { setProducoes([]); }
+      } catch (e) { falhaDeConexao = true; }
       try {
-        const r2 = await window.storage.get(ACIONAMENTOS_KEY, false);
+        const r2 = await buscarComRetentativa(ACIONAMENTOS_KEY);
         setAcionamentos(r2 ? JSON.parse(r2.value) : []);
-      } catch (e) { setAcionamentos([]); }
+      } catch (e) { falhaDeConexao = true; }
       try {
-        const r3 = await window.storage.get(OPORTUNIDADES_KEY, false);
+        const r3 = await buscarComRetentativa(OPORTUNIDADES_KEY);
         setOportunidadesManuais(r3 ? JSON.parse(r3.value) : []);
-      } catch (e) { setOportunidadesManuais([]); }
+      } catch (e) { falhaDeConexao = true; }
       try {
-        const r4 = await window.storage.get(CONSULTORES_KEY, false);
+        const r4 = await buscarComRetentativa(CONSULTORES_KEY);
         if (r4) setConsultores(JSON.parse(r4.value));
-      } catch (e) { /* mantém o padrão */ }
+      } catch (e) { falhaDeConexao = true; }
       try {
-        const r5 = await window.storage.get(METAS_INDIVIDUAIS_KEY, false);
+        const r5 = await buscarComRetentativa(METAS_INDIVIDUAIS_KEY);
         if (r5) setMetasIndividuais(JSON.parse(r5.value));
-      } catch (e) { /* mantém o padrão */ }
+      } catch (e) { falhaDeConexao = true; }
       try {
-        const r6 = await window.storage.get(METAS_LOJA_KEY, false);
+        const r6 = await buscarComRetentativa(METAS_LOJA_KEY);
         if (r6) setMetaLojaPorProduto(JSON.parse(r6.value));
-      } catch (e) { /* mantém o padrão */ }
+      } catch (e) { falhaDeConexao = true; }
       try {
-        const r7 = await window.storage.get(CONFIG_KEY, false);
+        const r7 = await buscarComRetentativa(CONFIG_KEY);
         if (r7) {
           const cfg = JSON.parse(r7.value);
           if (cfg.diasUteisMes) setDiasUteisMes(cfg.diasUteisMes);
           if (cfg.diasUteisPassados !== undefined) setDiasUteisPassados(cfg.diasUteisPassados);
           if (cfg.metaSeguroUnid !== undefined) setMetaSeguroUnid(cfg.metaSeguroUnid);
           if (cfg.supervisorPin !== undefined) setSupervisorPin(cfg.supervisorPin);
+          if (cfg.supervisorFoto !== undefined) setSupervisorFoto(cfg.supervisorFoto);
         }
-      } catch (e) { /* mantém o padrão */ }
+      } catch (e) { falhaDeConexao = true; }
+      setErroCarregamento(falhaDeConexao);
+      try {
+        const sessaoSalva = window.localStorage.getItem("radar:sessao");
+        if (sessaoSalva) {
+          const s = JSON.parse(sessaoSalva);
+          setPerfil(s.perfil || "supervisora");
+          setConsultorLogadoId(s.consultorLogadoId || null);
+          setTela(s.perfil === "consultor" ? "minhaProducao" : "matinal");
+          setLogado(true);
+        }
+      } catch (e) { /* sem sessão salva, mostra o login normalmente */ }
       setLoading(false);
     })();
   }, []);
@@ -165,12 +218,63 @@ export default function RadarSistema() {
   }
 
   async function salvarProducoes(novaLista) {
+    // Camada de segurança: antes de sobrescrever, comparamos com o que
+    // está REALMENTE salvo no banco agora (não com a tela local, que pode
+    // estar desatualizada/incompleta por falha de carregamento). Se a nova
+    // lista tiver bem menos itens que o banco, pedimos confirmação extra —
+    // isso teria evitado o incidente de produções apagadas.
+    try {
+      const atual = await window.storage.get(STORAGE_KEY, false);
+      if (atual) {
+        const listaAtualBanco = JSON.parse(atual.value);
+        const diferenca = listaAtualBanco.length - novaLista.length;
+        if (diferenca >= 3 && novaLista.length < listaAtualBanco.length * 0.8) {
+          const confirmou = window.confirm(
+            `Atenção: o banco tem ${listaAtualBanco.length} produções salvas, mas essa ação deixaria apenas ${novaLista.length}.\n\n` +
+            `Isso normalmente indica que a tela não carregou tudo corretamente (ex.: falha de internet), e salvar agora apagaria ${diferenca} produções de verdade.\n\n` +
+            `Recomendamos: cancelar, atualizar a página (F5) e tentar de novo.\n\nDeseja mesmo continuar e salvar assim mesmo?`
+          );
+          if (!confirmou) return { ok: false, erro: "Cancelado por segurança — quantidade de produções caiu demais." };
+        }
+        // guarda a versão atual do banco como backup antes de sobrescrever
+        await window.storage.set(STORAGE_KEY + ":backup_anterior", atual.value, false);
+      }
+    } catch (e) { /* se essa checagem falhar, não travamos o salvamento normal */ }
     setProducoes(novaLista); // atualiza todas as telas imediatamente
     return persistir(STORAGE_KEY, novaLista);
+  }
+
+  // Pra ADICIONAR/EDITAR/EXCLUIR uma única produção com várias pessoas
+  // usando o sistema ao mesmo tempo em computadores diferentes: em vez de
+  // partir da lista que já está aberta na tela (que pode estar um pouco
+  // desatualizada em relação ao que outro consultor acabou de salvar),
+  // buscamos a versão mais recente do banco bem na hora de salvar, e só
+  // então aplicamos a mudança. Isso reduz muito a chance de um lançamento
+  // de alguém "sumir" por causa de outro salvamento simultâneo.
+  async function salvarProducaoUnica(funcaoMudanca) {
+    let listaBase = producoes;
+    try {
+      const atual = await window.storage.get(STORAGE_KEY, false);
+      if (atual) listaBase = JSON.parse(atual.value);
+    } catch (e) { /* se não conseguir buscar a versão mais recente, segue com a local mesmo */ }
+    const novaLista = funcaoMudanca(listaBase);
+    return salvarProducoes(novaLista);
   }
   async function salvarAcionamentos(novaLista) {
     setAcionamentos(novaLista);
     return persistir(ACIONAMENTOS_KEY, novaLista);
+  }
+  // mesmo cuidado dos lançamentos de produção: busca a versão mais recente
+  // do banco antes de aplicar a mudança, pra reduzir conflito entre
+  // consultores lançando acionamentos ao mesmo tempo em telas diferentes.
+  async function salvarAcionamentoUnico(funcaoMudanca) {
+    let listaBase = acionamentos;
+    try {
+      const atual = await window.storage.get(ACIONAMENTOS_KEY, false);
+      if (atual) listaBase = JSON.parse(atual.value);
+    } catch (e) { /* segue com a local se não conseguir buscar */ }
+    const novaLista = funcaoMudanca(listaBase);
+    return salvarAcionamentos(novaLista);
   }
   async function salvarOportunidades(novaLista) {
     setOportunidadesManuais(novaLista);
@@ -215,12 +319,16 @@ export default function RadarSistema() {
   // ---- cálculos compartilhados (usados por Matinal, Painel e Parcial) ----
   const mesRef = mesAtual();
   const producoesMes = useMemo(() => producoes.filter((p) => (p.data || "").slice(0, 7) === mesRef), [producoes, mesRef]);
+  // só "Pago" entra nos números oficiais (Matinal, Painel, Elegibilidade). "Digitado" ainda não confirmado
+  // pela supervisora. Lançamentos antigos sem status (de antes dessa função existir) contam como pagos,
+  // pra não sumir produção que já estava valendo.
+  const producoesMesPagas = useMemo(() => producoesMes.filter((p) => !p.status || p.status === "pago"), [producoesMes]);
 
   // consultores "de loja" = não-externos. Só eles entram na meta/Mix oficial da loja.
   const consultoresLoja = consultores.filter((c) => !c.externo);
 
   function totalMesConsultorProduto(consultorId, produtoId) {
-    return producoesMes.filter((p) => p.consultorId === consultorId && p.produto === produtoId)
+    return producoesMesPagas.filter((p) => p.consultorId === consultorId && p.produto === produtoId)
       .reduce((acc, p) => acc + (Number(p.valor) || 0), 0);
   }
   function totalMesConsultorMix(consultorId) {
@@ -228,11 +336,11 @@ export default function RadarSistema() {
   }
   const producaoMesLojaGlobal = consultoresLoja.reduce((acc, c) => acc + totalMesConsultorMix(c.id), 0);
   function contratosMesConsultorProduto(consultorId, produtoId) {
-    return producoesMes.filter((p) => p.consultorId === consultorId && p.produto === produtoId).length;
+    return producoesMesPagas.filter((p) => p.consultorId === consultorId && p.produto === produtoId).length;
   }
   // SuperConta conta por CPF único — mesmo cliente lançado 2x não conta em dobro
   function superContasUnicasMesConsultor(consultorId) {
-    const cpfs = producoesMes
+    const cpfs = producoesMesPagas
       .filter((p) => p.consultorId === consultorId && p.produto === "creditoPessoal" && p.tipoCredito === "SuperConta")
       .map((p) => (p.cpf || "").replace(/\D/g, ""))
       .filter(Boolean);
@@ -268,17 +376,19 @@ export default function RadarSistema() {
   }
   const metaLojaMix = ["creditoPessoal", "consignado", "clt", "antecipacao"].reduce((s, p) => s + metaLojaProdutoTotal(p), 0);
 
-  async function salvarConfig(novoDiasUteisMes, novoDiasUteisPassados, novoMetaSeguroUnid, novoSupervisorPin) {
+  async function salvarConfig(novoDiasUteisMes, novoDiasUteisPassados, novoMetaSeguroUnid, novoSupervisorPin, novoSupervisorFoto) {
     const cfg = {
       diasUteisMes: novoDiasUteisMes ?? diasUteisMes,
       diasUteisPassados: novoDiasUteisPassados ?? diasUteisPassados,
       metaSeguroUnid: novoMetaSeguroUnid ?? metaSeguroUnid,
       supervisorPin: novoSupervisorPin ?? supervisorPin,
+      supervisorFoto: novoSupervisorFoto ?? supervisorFoto,
     };
     if (novoDiasUteisMes !== undefined) setDiasUteisMes(novoDiasUteisMes);
     if (novoDiasUteisPassados !== undefined) setDiasUteisPassados(novoDiasUteisPassados);
     if (novoMetaSeguroUnid !== undefined) setMetaSeguroUnid(novoMetaSeguroUnid);
     if (novoSupervisorPin !== undefined) setSupervisorPin(novoSupervisorPin);
+    if (novoSupervisorFoto !== undefined) setSupervisorFoto(novoSupervisorFoto);
     await persistir(CONFIG_KEY, cfg);
   }
 
@@ -287,9 +397,9 @@ export default function RadarSistema() {
     consultores, consultoresLoja, adicionarConsultor, removerConsultor, atualizarFotoConsultor, atualizarConsultorCampo,
     metasIndividuais, atualizarMetaIndividual, metaSeguroUnid,
     metaLojaPorProduto, atualizarMetaLojaProduto, atualizarMetaLojaTodos, metaLojaMix,
-    salvarProducoes, salvarAcionamentos, salvarOportunidades, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto,
+    salvarProducoes, salvarProducaoUnica, salvarAcionamentos, salvarAcionamentoUnico, salvarOportunidades, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto,
     superContasUnicasMesConsultor, metaIndividualConsultorProduto, metaIndividualConsultorMix, metaLojaProdutoTotal,
-    supervisorPin, salvarConfig,
+    supervisorPin, supervisorFoto, salvarConfig,
   };
 
   const telasPermitidasConsultor = ["minhaProducao", "producao", "radarComercial"];
@@ -301,11 +411,37 @@ export default function RadarSistema() {
     setConsultorLogadoId(consultorId || null);
     setTela(perfilEscolhido === "consultor" ? "minhaProducao" : "matinal");
     setLogado(true);
+    try {
+      window.localStorage.setItem("radar:sessao", JSON.stringify({ perfil: perfilEscolhido, consultorLogadoId: consultorId || null }));
+    } catch (e) { /* se der erro, só não persiste a sessão — não trava o login */ }
   }
   function sair() {
     setLogado(false);
     setPerfil("supervisora");
     setConsultorLogadoId(null);
+    try { window.localStorage.removeItem("radar:sessao"); } catch (e) {}
+  }
+
+  // lembrete de backup manual — só pra supervisora, uma vez por semana,
+  // com opção de adiar por hoje sem incomodar de novo até o dia seguinte
+  const [lembreteBackupAdiado, setLembreteBackupAdiado] = useState(false);
+  const mostrarLembreteBackup = (() => {
+    if (perfil !== "supervisora" || !logado || lembreteBackupAdiado) return false;
+    try {
+      const ultimo = window.localStorage.getItem("radar:ultimoBackupManual");
+      const adiadoAte = window.localStorage.getItem("radar:lembreteBackupAdiadoAte");
+      if (adiadoAte && new Date(adiadoAte) > new Date()) return false;
+      if (!ultimo) return true;
+      const diasDesde = (Date.now() - new Date(ultimo).getTime()) / (1000 * 60 * 60 * 24);
+      return diasDesde >= 7;
+    } catch (e) { return false; }
+  })();
+  function adiarLembreteBackup() {
+    try {
+      const amanha = new Date(); amanha.setDate(amanha.getDate() + 1);
+      window.localStorage.setItem("radar:lembreteBackupAdiadoAte", amanha.toISOString());
+    } catch (e) {}
+    setLembreteBackupAdiado(true);
   }
 
   if (!logado) {
@@ -314,8 +450,29 @@ export default function RadarSistema() {
 
   return (
     <div className="min-h-screen w-full bg-violet-50 flex font-[Inter,sans-serif]">
-      <Sidebar tela={telaEfetiva} setTela={setTela} onSair={sair} perfil={perfil} consultorLogado={consultorLogado} />
+      <Sidebar tela={telaEfetiva} setTela={setTela} onSair={sair} perfil={perfil} consultorLogado={consultorLogado} supervisorFoto={supervisorFoto} salvarConfig={salvarConfig} />
       <main className="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6 space-y-5">
+        {erroCarregamento && (
+          <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <AlertTriangle size={16} className="flex-shrink-0" />
+            <span>
+              <strong>Não consegui carregar todos os dados.</strong> Isso costuma ser conexão instável — seus dados continuam salvos, não foram apagados.
+              {" "}
+              <button type="button" onClick={() => window.location.reload()} className="underline font-semibold">Tentar de novo</button>
+            </span>
+          </div>
+        )}
+        {mostrarLembreteBackup && (
+          <div className="flex items-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-700">
+            <Shield size={16} className="flex-shrink-0" />
+            <span className="flex-1">
+              <strong>Que tal exportar um backup?</strong> Faz mais de uma semana desde o último backup manual salvo.
+              {" "}
+              <button type="button" onClick={() => setTela("backup")} className="underline font-semibold">Ir para Backup</button>
+            </span>
+            <button type="button" onClick={adiarLembreteBackup} className="text-violet-400 hover:text-violet-600 flex-shrink-0"><X size={16} /></button>
+          </div>
+        )}
         <MobileNav tela={telaEfetiva} setTela={setTela} perfil={perfil} />
         {perfil === "consultor" ? (
           <>
@@ -371,7 +528,7 @@ function MobileNav({ tela, setTela, perfil }) {
   );
 }
 
-function Sidebar({ tela, setTela, onSair, perfil, consultorLogado }) {
+function Sidebar({ tela, setTela, onSair, perfil, consultorLogado, supervisorFoto, salvarConfig }) {
   const itensSupervisora = [
     { id: "matinal", icon: <Sun size={16} />, label: "Matinal" },
     { id: "painel", icon: <BarChart2 size={16} />, label: "Painel Estratégico" },
@@ -405,6 +562,28 @@ function Sidebar({ tela, setTela, onSair, perfil, consultorLogado }) {
           <div className="leading-tight">
             <p className="text-xs font-bold text-white">{consultorLogado.nome}</p>
             <p className="text-[10px] text-violet-300">Consultor</p>
+          </div>
+        </div>
+      )}
+
+      {perfil === "supervisora" && (
+        <div className="flex items-center gap-2.5 rounded-xl bg-white/10 border border-white/10 px-3 py-2.5 mb-4">
+          <label className="relative cursor-pointer group shrink-0">
+            <Avatar nome="Letícia" foto={supervisorFoto} size={44} />
+            <input type="file" accept="image/*" className="hidden" onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file || !salvarConfig) return;
+              const reader = new FileReader();
+              reader.onload = () => salvarConfig(undefined, undefined, undefined, undefined, reader.result);
+              reader.readAsDataURL(file);
+            }} />
+            <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-violet-600 text-white flex items-center justify-center text-[8px] group-hover:bg-violet-700 border border-violet-900">
+              <Pencil size={8} />
+            </span>
+          </label>
+          <div className="leading-tight">
+            <p className="text-xs font-bold text-white">Letícia</p>
+            <p className="text-[10px] text-violet-300">Supervisora</p>
           </div>
         </div>
       )}
@@ -471,7 +650,7 @@ function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores, superv
   }
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-violet-100 via-violet-50 to-orange-50 flex items-center justify-center p-4 sm:p-8 pb-32 sm:pb-36 relative overflow-x-hidden overflow-y-auto font-[Inter,sans-serif]">
+    <div className="min-h-screen w-full bg-gradient-to-br from-violet-100 via-violet-50 to-orange-50 flex flex-col p-4 sm:p-8 relative overflow-x-hidden overflow-y-auto font-[Inter,sans-serif]">
       <style>{`
         @keyframes radarSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes radarPing { 0% { transform: scale(0.55); opacity: 0.65; } 80% { opacity: 0; } 100% { transform: scale(1.35); opacity: 0; } }
@@ -487,6 +666,7 @@ function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores, superv
         {Array.from({ length: 20 }).map((_, i) => <span key={i} className="w-1.5 h-1.5 rounded-full bg-violet-500" />)}
       </div>
 
+      <div className="flex-1 w-full flex items-center justify-center py-6">
       <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 gap-10 lg:gap-16 items-center z-10">
         <div className="flex flex-col items-center lg:items-start text-center lg:text-left relative pb-16 lg:pb-24">
           <div className="relative z-10">
@@ -571,8 +751,9 @@ function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores, superv
             ) : (
               <div>
                 <label className="flex items-center gap-1.5 text-xs font-bold text-violet-900 mb-1.5"><User size={13} /> USUÁRIO</label>
-                <input type="text" value={usuario} onChange={(e) => setUsuario(e.target.value)} placeholder="Digite seu usuário"
-                  className="w-full rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm text-violet-950 placeholder:text-violet-300 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200 transition" />
+                <div className="flex items-center gap-2 rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm text-violet-950">
+                  <ShieldCheck size={15} className="text-violet-400" /> Letícia — Supervisora
+                </div>
               </div>
             )}
             <div>
@@ -591,11 +772,11 @@ function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores, superv
               ENTRAR NO SISTEMA <ArrowRight size={16} />
             </button>
           </form>
-          <p className="text-[11px] text-violet-300 mt-4 text-center">Usuário é decorativo. PIN só é validado se já configurado.</p>
         </div>
       </div>
+      </div>
 
-      <div className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
+      <div className="w-full shrink-0">
         <svg viewBox="0 0 1536 90" preserveAspectRatio="none" className="w-full h-14 sm:h-16 block">
           <defs>
             <linearGradient id="footerFillLogin" x1="0%" y1="0%" x2="100%" y2="0%">
@@ -605,7 +786,7 @@ function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores, superv
           <path d="M0,55 C 380,10 1100,95 1536,25 L1536,90 L0,90 Z" fill="url(#footerFillLogin)" />
           <path d="M0,55 C 380,10 1100,95 1536,25" fill="none" stroke="#F5851F" strokeWidth="3" strokeLinecap="round" />
         </svg>
-        <div className="relative flex items-center justify-center gap-2 text-[10px] sm:text-[11px] text-violet-200 pb-2.5 sm:pb-3 -mt-2">
+        <div className="relative flex items-center justify-center gap-2 text-[10px] sm:text-[11px] text-violet-200 pb-2.5 sm:pb-3 -mt-2 bg-violet-900">
           © 2026 <span className="text-white font-semibold">RADAR</span> • Gestão Comercial
           <span className="mx-1 opacity-40">|</span><ShieldCheck size={12} /> Versão 1.0.0
         </div>
@@ -676,7 +857,7 @@ function RadarLogoGrande() {
 // ============================================================
 // TELA: MINHA PRODUÇÃO (perfil consultor)
 // ============================================================
-function TelaMinhaProducao({ consultorLogadoId, consultores, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto, superContasUnicasMesConsultor, metaIndividualConsultorProduto, metaIndividualConsultorMix, diasUteisMes, diasUteisPassados, producoes }) {
+function TelaMinhaProducao({ consultorLogadoId, consultores, consultoresLoja, metaIndividualConsultorProduto, metaIndividualConsultorMix, diasUteisMes, diasUteisPassados, producoes, totalMesConsultorProduto }) {
   const consultor = consultores.find((c) => c.id === consultorLogadoId);
   const diasUteisRestantes = Math.max(diasUteisMes - diasUteisPassados, 0);
   const ritmoIdeal = diasUteisMes > 0 ? Math.round((diasUteisPassados / diasUteisMes) * 100) : 0;
@@ -685,7 +866,29 @@ function TelaMinhaProducao({ consultorLogadoId, consultores, totalMesConsultorPr
     return <p className="text-sm text-slate-500">Consultor não encontrado. Fale com seu supervisor.</p>;
   }
 
-  const total = totalMesConsultorMix(consultor.id);
+  // "Minha Produção" mostra TUDO que a consultora lançou, digitado ou pago —
+  // pra ela sempre ver o próprio esforço. Só a Matinal/Painel exigem "Pago".
+  const mesRef = mesAtual();
+  const minhasProducoesMes = useMemo(
+    () => producoes.filter((p) => p.consultorId === consultorLogadoId && (p.data || "").slice(0, 7) === mesRef),
+    [producoes, consultorLogadoId, mesRef]
+  );
+  function totalProduto(pid) {
+    return minhasProducoesMes.filter((p) => p.produto === pid).reduce((s, p) => s + (Number(p.valor) || 0), 0);
+  }
+  function totalMixConsultor() {
+    return ["creditoPessoal", "consignado", "clt", "antecipacao"].reduce((s, pid) => s + totalProduto(pid), 0);
+  }
+  function contratosProduto(pid) {
+    return minhasProducoesMes.filter((p) => p.produto === pid).length;
+  }
+  function superContasUnicas() {
+    const cpfs = minhasProducoesMes.filter((p) => p.produto === "creditoPessoal" && p.tipoCredito === "SuperConta")
+      .map((p) => (p.cpf || "").replace(/\D/g, "")).filter(Boolean);
+    return new Set(cpfs).size;
+  }
+
+  const total = totalMixConsultor();
   const metaMix = metaIndividualConsultorMix(consultor.id);
   const pct = metaMix > 0 ? Math.round((total / metaMix) * 100) : 0;
   const falta = Math.max(metaMix - total, 0);
@@ -696,20 +899,52 @@ function TelaMinhaProducao({ consultorLogadoId, consultores, totalMesConsultorPr
   const produtosDetalhe = ["creditoPessoal", "consignado", "clt", "antecipacao"].map((pid) => {
     const nome = { creditoPessoal: "Crédito Pessoal", consignado: "Consignado", clt: "CLT", antecipacao: "Antecipação" }[pid];
     const metaP = metaIndividualConsultorProduto(consultor.id, pid);
-    const realP = totalMesConsultorProduto(consultor.id, pid);
+    const realP = totalProduto(pid);
     const faltaP = Math.max(metaP - realP, 0);
     const diariaP = diasUteisRestantes > 0 ? faltaP / diasUteisRestantes : 0;
     const pctP = metaP > 0 ? Math.round((realP / metaP) * 100) : 0;
     return { id: pid, nome, metaP, realP, faltaP, diariaP, pctP };
   });
 
-  const superContas = superContasUnicasMesConsultor(consultor.id);
-  const seguros = contratosMesConsultorProduto(consultor.id, "seguro");
-  const consignados = contratosMesConsultorProduto(consultor.id, "consignado");
-  const clts = contratosMesConsultorProduto(consultor.id, "clt");
+  const superContas = superContasUnicas();
+  const seguros = contratosProduto("seguro");
+  const consignados = contratosProduto("consignado");
+  const clts = contratosProduto("clt");
   const elegivel = superContas >= ELEGIBILIDADE.superConta && seguros >= ELEGIBILIDADE.seguro && consignados >= ELEGIBILIDADE.consignado && clts >= ELEGIBILIDADE.clt;
 
-  const minhasProducoesRecentes = producoes.filter((p) => p.consultorId === consultor.id).sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0)).slice(0, 5);
+  const minhasProducoesRecentes = [...minhasProducoesMes].sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0)).slice(0, 5);
+
+  // ---- produto que mais precisa de atenção (menor % da meta) ----
+  const produtoFoco = produtosDetalhe.filter((p) => p.metaP > 0).sort((a, b) => a.pctP - b.pctP)[0] || null;
+
+  // ---- frase motivacional: muda todo dia, mas fica igual o dia inteiro ----
+  const FRASES_MOTIVACIONAIS = [
+    "Cada cliente atendido hoje é um passo mais perto da sua meta. Bora! 🚀",
+    "Consistência vence intensidade. Um contrato de cada vez. 💪",
+    "Seu esforço de hoje é o resultado de amanhã. Confia no processo!",
+    "Grandes vendedores não nascem prontos — eles insistem um pouco mais todo dia.",
+    "Foco no que você controla: suas ligações, suas abordagens, sua atitude. O resultado vem.",
+    "Hoje é uma nova chance de bater sua própria marca. Vai com tudo! 🔥",
+    "Não compare seu capítulo 1 com o capítulo 20 de outra pessoa. Siga seu ritmo, sem parar.",
+    "O 'não' de hoje pode virar o 'sim' de amanhã, se você continuar tentando.",
+    "Sua meta não é um teto, é só o ponto de partida. Supere-se!",
+    "Disciplina é escolher entre o que você quer agora e o que você quer mais. Foco na meta!",
+  ];
+  const seedFrase = (todayISO() + consultorLogadoId).split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+  const fraseDoDia = FRASES_MOTIVACIONAIS[seedFrase % FRASES_MOTIVACIONAIS.length];
+
+  // ---- liderança: em quais produtos esse consultor é o 1º colocado da loja ----
+  const produtosLideranca = ["creditoPessoal", "consignado", "clt", "antecipacao"]
+    .map((pid) => {
+      const nome = { creditoPessoal: "Crédito Pessoal", consignado: "Consignado", clt: "CLT", antecipacao: "Antecipação" }[pid];
+      const ranking = (consultoresLoja || [])
+        .map((c) => ({ id: c.id, valor: totalMesConsultorProduto(c.id, pid) }))
+        .sort((a, b) => b.valor - a.valor);
+      const meuValor = totalMesConsultorProduto(consultorLogadoId, pid);
+      const souLider = ranking.length > 0 && ranking[0].id === consultorLogadoId && meuValor > 0;
+      return souLider ? { pid, nome } : null;
+    })
+    .filter(Boolean);
 
   return (
     <>
@@ -731,6 +966,29 @@ function TelaMinhaProducao({ consultorLogadoId, consultores, totalMesConsultorPr
         <Kpi icon={<TrendingUp size={16} />} label="% ATINGIDO" value={`${pct}%`} sub="do mês" accent="orange" />
         <Kpi icon={<Clock size={16} />} label="DIÁRIA NECESSÁRIA" value={formatBRL(diaria)} sub={`Próx. ${diasUteisRestantes} dias úteis`} accent="orange" />
       </div>
+
+      {produtosLideranca.length > 0 && (
+        <div className="rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50 px-4 sm:px-5 py-3.5 flex items-start gap-2.5">
+          <Trophy size={18} className="text-amber-500 flex-shrink-0 mt-0.5" />
+          <p className="text-xs sm:text-sm font-semibold text-amber-800">
+            Você é a 1ª colocada da loja em {produtosLideranca.map((p) => p.nome).join(" e ")} este mês! 🏆
+          </p>
+        </div>
+      )}
+
+      <div className="rounded-2xl border border-violet-100 bg-gradient-to-r from-violet-50 to-white px-4 sm:px-5 py-3.5 flex items-start gap-2.5">
+        <Sparkles size={18} className="text-violet-500 flex-shrink-0 mt-0.5" />
+        <p className="text-xs sm:text-sm font-medium text-violet-800 italic">{fraseDoDia}</p>
+      </div>
+
+      {produtoFoco && produtoFoco.pctP < 100 && (
+        <div className="rounded-2xl border border-red-100 bg-red-50 px-4 sm:px-5 py-3.5 flex items-start gap-2.5">
+          <Target size={18} className="text-red-500 flex-shrink-0 mt-0.5" />
+          <p className="text-xs sm:text-sm text-red-700">
+            <strong>Foco sugerido: {produtoFoco.nome}.</strong> Está em {produtoFoco.pctP}% da meta — faltam {formatBRL(produtoFoco.faltaP)} ({formatBRL(produtoFoco.diariaP)}/dia útil).
+          </p>
+        </div>
+      )}
 
       <div className="rounded-2xl border border-violet-100 bg-white p-4 sm:p-5">
         <div className="flex items-center justify-between mb-4">
@@ -976,26 +1234,26 @@ function TelaMatinal({ producoes, diasUteisMes, diasUteisPassados, salvarConfig,
 
       <div>
         <h2 className="text-sm font-extrabold text-violet-950 mb-3">Painel dos Consultores — Diárias</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {consultores.map((c) => {
             const total = totalMesConsultorMix(c.id);
             const metaC = metaIndividualConsultorMix(c.id);
             const pct = metaC > 0 ? Math.round((total / metaC) * 100) : 0;
             const status = pct >= ritmoIdeal ? { label: "No ritmo", color: "#22C55E" } : pct >= ritmoIdeal - 15 ? { label: "Atenção", color: "#F5A623" } : { label: "Abaixo do ritmo", color: "#EF4444" };
             return (
-              <div key={c.id} className="rounded-2xl border border-violet-100 bg-white p-4">
-                <div className="flex items-center gap-2.5 mb-3">
-                  <Avatar nome={c.nome} foto={c.foto} size={36} />
+              <div key={c.id} className="rounded-2xl border border-violet-100 bg-white p-5">
+                <div className="flex items-center gap-3 mb-4">
+                  <Avatar nome={c.nome} foto={c.foto} size={44} />
                   <div>
-                    <p className="font-bold text-violet-950 text-sm">{c.nome}</p>
-                    <p className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: status.color }}>
+                    <p className="font-bold text-violet-950 text-base">{c.nome}</p>
+                    <p className="flex items-center gap-1 text-xs font-semibold" style={{ color: status.color }}>
                       <span className="w-1.5 h-1.5 rounded-full" style={{ background: status.color }} />{status.label}
                     </p>
                   </div>
                 </div>
                 <div className="overflow-x-auto -mx-1 px-1">
-                <table className="w-full text-[11px] min-w-[400px]">
-                  <thead><tr className="text-slate-400"><th className="text-left font-semibold pb-1.5">Produto</th><th className="text-right font-semibold pb-1.5">Meta</th><th className="text-right font-semibold pb-1.5">Realiz.</th><th className="text-right font-semibold pb-1.5">Falta</th><th className="text-right font-semibold pb-1.5">Projeção</th><th className="text-right font-semibold pb-1.5">Diária</th></tr></thead>
+                <table className="w-full text-xs min-w-[480px]">
+                  <thead><tr className="text-slate-400"><th className="text-left font-semibold pb-2">Produto</th><th className="text-right font-semibold pb-2">Meta</th><th className="text-right font-semibold pb-2">Realiz.</th><th className="text-right font-semibold pb-2">Falta</th><th className="text-right font-semibold pb-2">Projeção</th><th className="text-right font-semibold pb-2">Diária</th></tr></thead>
                   <tbody>
                     {["creditoPessoal", "consignado", "clt", "antecipacao"].map((pid) => {
                       const nome = { creditoPessoal: "Créd. Pessoal", consignado: "Consignado", clt: "CLT", antecipacao: "Antecip." }[pid];
@@ -1010,26 +1268,26 @@ function TelaMatinal({ producoes, diasUteisMes, diasUteisPassados, salvarConfig,
                       const projColor = pctProjC >= 100 ? "#16A34A" : pctProjC >= 80 ? "#C2760F" : "#EF4444";
                       return (
                         <tr key={pid} className="border-t border-violet-50">
-                          <td className="py-1.5 text-violet-950 whitespace-nowrap">{nome}</td>
-                          <td className="py-1.5 text-right text-slate-500">{(metaPC / 1000).toFixed(0)}k</td>
-                          <td className="py-1.5 text-right font-semibold text-violet-950">{(realC / 1000).toFixed(1)}k</td>
-                          <td className="py-1.5 text-right text-slate-500">{(faltaC / 1000).toFixed(1)}k</td>
-                          <td className="py-1.5 text-right font-semibold" style={{ color: projColor }}>{(projecaoC / 1000).toFixed(1)}k</td>
-                          <td className="py-1.5 text-right font-bold">
+                          <td className="py-2 text-violet-950 whitespace-nowrap">{nome}</td>
+                          <td className="py-2 text-right text-slate-500">{formatBRL(metaPC)}</td>
+                          <td className="py-2 text-right font-semibold text-violet-950">{formatBRL(realC)}</td>
+                          <td className="py-2 text-right text-slate-500">{formatBRL(faltaC)}</td>
+                          <td className="py-2 text-right font-semibold" style={{ color: projColor }}>{formatBRL(projecaoC)}</td>
+                          <td className="py-2 text-right font-bold">
                             <span className="inline-flex items-center gap-1 justify-end" style={{ color: dotColor }}>{formatBRL(diariaC)}<span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: dotColor }} /></span>
                           </td>
                         </tr>
                       );
                     })}
                     <tr className="border-t-2 border-violet-200">
-                      <td className="py-1.5 font-bold text-violet-950 whitespace-nowrap">Total (Mix)</td>
-                      <td className="py-1.5 text-right font-bold text-slate-500">{(metaC / 1000).toFixed(0)}k</td>
-                      <td className="py-1.5 text-right font-bold text-violet-600">{(total / 1000).toFixed(1)}k</td>
-                      <td className="py-1.5 text-right font-bold text-slate-500">{(Math.max(metaC - total, 0) / 1000).toFixed(1)}k</td>
-                      <td className="py-1.5 text-right font-bold" style={{ color: (diasUteisPassados > 0 ? (total / diasUteisPassados) * diasUteisMes : total) >= metaC ? "#16A34A" : "#C2760F" }}>
-                        {((diasUteisPassados > 0 ? (total / diasUteisPassados) * diasUteisMes : total) / 1000).toFixed(1)}k
+                      <td className="py-2 font-bold text-violet-950 whitespace-nowrap">Total (Mix)</td>
+                      <td className="py-2 text-right font-bold text-slate-500">{formatBRL(metaC)}</td>
+                      <td className="py-2 text-right font-bold text-violet-600">{formatBRL(total)}</td>
+                      <td className="py-2 text-right font-bold text-slate-500">{formatBRL(Math.max(metaC - total, 0))}</td>
+                      <td className="py-2 text-right font-bold" style={{ color: (diasUteisPassados > 0 ? (total / diasUteisPassados) * diasUteisMes : total) >= metaC ? "#16A34A" : "#C2760F" }}>
+                        {formatBRL(diasUteisPassados > 0 ? (total / diasUteisPassados) * diasUteisMes : total)}
                       </td>
-                      <td className="py-1.5 text-right font-bold text-orange-500">{pct}%</td>
+                      <td className="py-2 text-right font-bold text-orange-500">{pct}%</td>
                     </tr>
                   </tbody>
                 </table>
@@ -1310,7 +1568,7 @@ function TelaPainelEstrategico({ producoes, diasUteisMes, diasUteisPassados, tot
 // ============================================================
 // TELA: PARCIAL DO DIA
 // ============================================================
-function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultores, consultoresLoja, metaLojaProdutoTotal, metaLojaMix }) {
+function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, salvarAcionamentoUnico, consultores, consultoresLoja, metaLojaProdutoTotal, metaLojaMix }) {
   const [periodo, setPeriodo] = useState("hoje");
   const [produtoFiltro, setProdutoFiltro] = useState("todos");
   const [fConsultor, setFConsultor] = useState("");
@@ -1319,6 +1577,34 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
   const [fObs, setFObs] = useState("");
   const [salvando, setSalvando] = useState(false);
   const [mensagem, setMensagem] = useState(null);
+  const [editandoAcionamentoId, setEditandoAcionamentoId] = useState(null);
+  const [gerandoImagem, setGerandoImagem] = useState(false);
+
+  async function gerarImagem() {
+    setGerandoImagem(true);
+    try {
+      if (!window.html2canvas) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+          script.onload = resolve;
+          script.onerror = () => reject(new Error("Não foi possível carregar a ferramenta de imagem."));
+          document.body.appendChild(script);
+        });
+      }
+      const elemento = document.getElementById("parcial-resumo-print");
+      if (!elemento) throw new Error("Área de resumo não encontrada.");
+      const canvas = await window.html2canvas(elemento, { backgroundColor: "#ffffff", scale: 2, useCORS: true });
+      const link = document.createElement("a");
+      link.download = `parcial-do-dia-${todayISO()}.png`;
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+    } catch (e) {
+      alert("Não foi possível gerar a imagem agora. Tenta de novo em alguns segundos.");
+    } finally {
+      setGerandoImagem(false);
+    }
+  }
 
   const PRODUTOS = [
     { id: "creditoPessoal", nome: "Crédito Pessoal", icon: Wallet },
@@ -1364,14 +1650,31 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
     if (!fConsultor) return setMensagem({ tipo: "erro", texto: "Selecione um consultor antes de registrar." });
     if (!fQtd || fQtd <= 0) return setMensagem({ tipo: "erro", texto: "Informe uma quantidade válida (maior que 0)." });
     setSalvando(true); setMensagem(null);
-    const novo = { id: `${Date.now()}`, consultorId: fConsultor, tipo: fTipo, quantidade: fQtd, observacao: fObs, data: hoje };
-    const novaLista = [...acionamentos, novo];
-    const r = await salvarAcionamentos(novaLista);
-    if (r.ok) setMensagem({ tipo: "sucesso", texto: "Acionamento registrado com sucesso!" });
+    const idAlvo = editandoAcionamentoId;
+    const r = await salvarAcionamentoUnico((listaFresca) => {
+      if (idAlvo) {
+        return listaFresca.map((a) => a.id === idAlvo
+          ? { ...a, consultorId: fConsultor, tipo: fTipo, quantidade: fQtd, observacao: fObs }
+          : a);
+      }
+      const novo = { id: `${Date.now()}`, consultorId: fConsultor, tipo: fTipo, quantidade: fQtd, observacao: fObs, data: hoje };
+      return [...listaFresca, novo];
+    });
+    if (r.ok) setMensagem({ tipo: "sucesso", texto: editandoAcionamentoId ? "Acionamento atualizado!" : "Acionamento registrado com sucesso!" });
     else setMensagem({ tipo: "erro", texto: `Salvo nesta sessão (${r.erro}), mas pode não persistir ao recarregar.` });
-    setFQtd(1); setFObs(""); setFConsultor("");
+    setFQtd(1); setFObs(""); setFConsultor(""); setEditandoAcionamentoId(null);
     setSalvando(false);
     setTimeout(() => setMensagem(null), 6000);
+  }
+
+  function editarAcionamento(a) {
+    setFConsultor(a.consultorId); setFTipo(a.tipo); setFQtd(a.quantidade); setFObs(a.observacao || "");
+    setEditandoAcionamentoId(a.id);
+  }
+
+  async function excluirAcionamento(id) {
+    await salvarAcionamentoUnico((listaFresca) => listaFresca.filter((a) => a.id !== id));
+    if (editandoAcionamentoId === id) { setEditandoAcionamentoId(null); setFQtd(1); setFObs(""); setFConsultor(""); }
   }
 
   const evolucaoData = useMemo(() => {
@@ -1402,6 +1705,7 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
 
   return (
     <>
+      <div id="parcial-resumo-print" className="space-y-5">
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-violet-950 via-violet-900 to-violet-800 px-5 sm:px-7 py-6 text-white">
         <div className="absolute -right-10 -top-10 w-52 h-52 rounded-full bg-orange-500 opacity-20 blur-3xl" />
         <div className="absolute -left-10 -bottom-16 w-52 h-52 rounded-full bg-violet-500 opacity-30 blur-3xl" />
@@ -1416,7 +1720,9 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
               <p className="text-xs font-bold text-white">{new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" })}</p>
             </div>
             <button className="flex items-center gap-1.5 rounded-xl bg-white/10 border border-white/10 px-3 py-2 text-xs text-violet-100 hover:bg-white/20 transition"><ArrowLeftRight size={13} /> Comparar com ontem</button>
-            <button className="flex items-center gap-1.5 rounded-xl bg-orange-500 text-white px-3.5 py-2.5 text-xs font-bold hover:bg-orange-600 transition"><ImageIcon size={14} /> Gerar imagem</button>
+            <button onClick={gerarImagem} disabled={gerandoImagem} className="flex items-center gap-1.5 rounded-xl bg-orange-500 text-white px-3.5 py-2.5 text-xs font-bold hover:bg-orange-600 transition disabled:opacity-60">
+              <ImageIcon size={14} /> {gerandoImagem ? "Gerando..." : "Gerar imagem"}
+            </button>
           </div>
         </div>
       </div>
@@ -1527,7 +1833,7 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
                 <LineChart data={evolucaoData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#EDE9FE" />
                   <XAxis dataKey="hora" tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                  <YAxis tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatBRLCurto(v)} />
                   <Tooltip formatter={(v) => formatBRL(v)} />
                   <Line type="monotone" dataKey="meta" stroke="#C4B5FD" strokeDasharray="5 5" dot={false} name="Meta diária acumulada" />
                   <Line type="monotone" dataKey="realizado" stroke="#7C3AED" strokeWidth={2.5} dot={{ r: 3 }} name="Realizado" connectNulls />
@@ -1581,8 +1887,33 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
             <label className="block text-[11px] text-slate-400 mb-1">Observação (opcional)</label>
             <textarea value={fObs} onChange={(e) => setFObs(e.target.value)} rows={2} placeholder="Ex.: Cliente solicitou retorno..."
               className="w-full rounded-lg border border-violet-100 bg-violet-50 px-2.5 py-2 text-xs text-violet-950 mb-3 outline-none focus:border-violet-400 resize-none" />
-            <button onClick={registrarAcionamento} disabled={salvando} className="w-full rounded-xl bg-violet-600 text-white text-xs font-bold py-2.5 disabled:opacity-40 hover:bg-violet-700 transition">{salvando ? "Salvando..." : "Registrar Acionamento"}</button>
+            <div className="flex gap-2">
+              <button onClick={registrarAcionamento} disabled={salvando} className="flex-1 rounded-xl bg-violet-600 text-white text-xs font-bold py-2.5 disabled:opacity-40 hover:bg-violet-700 transition">{salvando ? "Salvando..." : editandoAcionamentoId ? "Salvar Alteração" : "Registrar Acionamento"}</button>
+              {editandoAcionamentoId && (
+                <button onClick={() => { setEditandoAcionamentoId(null); setFQtd(1); setFObs(""); setFConsultor(""); }} className="rounded-xl border border-violet-100 text-violet-600 text-xs font-bold px-3 hover:bg-violet-50 transition">Cancelar</button>
+              )}
+            </div>
             {mensagem && <p className={`mt-2 text-[11px] font-semibold ${mensagem.tipo === "sucesso" ? "text-green-600" : "text-red-500"}`}>{mensagem.texto}</p>}
+
+            {acionamentosPeriodo.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-violet-50">
+                <p className="text-[11px] font-bold text-slate-400 mb-2">Lançamentos ({periodo === "hoje" ? "hoje" : "semana"})</p>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {[...acionamentosPeriodo].reverse().map((a) => (
+                    <div key={a.id} className={`flex items-center justify-between gap-2 text-[11px] rounded-lg px-2.5 py-1.5 ${editandoAcionamentoId === a.id ? "bg-violet-100 ring-1 ring-violet-400" : "bg-violet-50"}`}>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-violet-950 truncate">{consultores.find((c) => c.id === a.consultorId)?.nome || "—"} · {a.quantidade}x {a.tipo === "ligacao" ? "Ligação" : a.tipo === "whatsapp" ? "WhatsApp" : "Outros"}</p>
+                        {a.observacao && <p className="text-slate-400 truncate">{a.observacao}</p>}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button onClick={() => editarAcionamento(a)} className="w-6 h-6 rounded-lg border border-violet-100 flex items-center justify-center text-violet-600 hover:bg-white transition"><Pencil size={11} /></button>
+                        <button onClick={() => excluirAcionamento(a.id)} className="w-6 h-6 rounded-lg border border-red-100 flex items-center justify-center text-red-500 hover:bg-red-50 transition"><Trash2 size={11} /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="rounded-2xl border border-violet-100 bg-white p-4">
@@ -1609,6 +1940,7 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
           </div>
         </div>
       </div>
+      </div>
     </>
   );
 }
@@ -1619,10 +1951,10 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, consultor
 const CAMPOS_VAZIOS = {
   cliente: "", cpf: "", telefone: "", adesao: "", data: todayISO(),
   produto: "", valor: "", consultorId: "",
-  tipoCredito: "", proximoRefin: "", possuiOferta: "sim",
+  tipoCredito: "", proximoRefin: "", possuiOferta: "sim", status: "digitado",
 };
 
-function TelaCentralProducao({ producoes, salvarProducoes, consultores, consultorFixoId }) {
+function TelaCentralProducao({ producoes, salvarProducoes, salvarProducaoUnica, consultores, consultorFixoId }) {
   const [campos, setCampos] = useState(() => consultorFixoId ? { ...CAMPOS_VAZIOS, consultorId: consultorFixoId } : CAMPOS_VAZIOS);
   const [editandoId, setEditandoId] = useState(null);
   const [busca, setBusca] = useState("");
@@ -1650,9 +1982,31 @@ function TelaCentralProducao({ producoes, salvarProducoes, consultores, consulto
     if (!campos.data) return setMensagem({ tipo: "erro", texto: "Informe a data da produção." });
     if (!campos.produto) return setMensagem({ tipo: "erro", texto: "Selecione o produto." });
     if (!campos.consultorId) return setMensagem({ tipo: "erro", texto: "Selecione o consultor responsável." });
-    if (campos.produto !== "seguro" && (!campos.valor || Number(String(campos.valor).replace(",", ".")) <= 0)) return setMensagem({ tipo: "erro", texto: "Informe o valor liberado." });
+    if (campos.produto !== "seguro" && (!campos.valor || parseValorMonetario(campos.valor) <= 0)) return setMensagem({ tipo: "erro", texto: "Informe o valor liberado." });
 
     setSalvando(true); setMensagem(null);
+
+    // checa duplicidade de adesão contra a versão mais recente do banco —
+    // importante com várias pessoas lançando ao mesmo tempo em telas diferentes
+    if (!editandoId) {
+      try {
+        const atual = await window.storage.get(STORAGE_KEY, false);
+        const listaFresca = atual ? JSON.parse(atual.value) : producoes;
+        const duplicada = listaFresca.find((p) => p.adesao.trim() === campos.adesao.trim());
+        if (duplicada) {
+          const nomeCons = consultores.find((c) => c.id === duplicada.consultorId)?.nome || duplicada.consultorId;
+          const confirmou = window.confirm(
+            `Atenção: a adesão "${campos.adesao.trim()}" já foi lançada por ${nomeCons} em ${duplicada.data} (${duplicada.hora}).\n\n` +
+            `Deseja lançar mesmo assim?`
+          );
+          if (!confirmou) { setSalvando(false); return; }
+        }
+      } catch (e) { /* se não conseguir checar, segue normalmente sem travar o lançamento */ }
+    }
+
+    const quemEstaMexendo = consultorFixoId
+      ? (consultores.find((c) => c.id === consultorFixoId)?.nome || "Consultor(a)")
+      : "Supervisora";
 
     const registro = {
       id: editandoId || `${Date.now()}`,
@@ -1660,14 +2014,21 @@ function TelaCentralProducao({ producoes, salvarProducoes, consultores, consulto
       criadoEm: editandoId ? producoes.find((p) => p.id === editandoId)?.criadoEm || Date.now() : Date.now(),
       hora: editandoId ? producoes.find((p) => p.id === editandoId)?.hora || horaAgora() : horaAgora(),
       cliente: campos.cliente.trim(), cpf: campos.cpf.trim(), telefone: campos.telefone.trim(), adesao: campos.adesao.trim(),
-      produto: campos.produto, valor: Number(String(campos.valor).replace(",", ".")) || 0, consultorId: campos.consultorId,
+      produto: campos.produto, valor: parseValorMonetario(campos.valor), consultorId: campos.consultorId,
       tipoCredito: campos.produto === "creditoPessoal" ? campos.tipoCredito : "",
       proximoRefin: campos.produto === "creditoPessoal" ? campos.proximoRefin : "",
       possuiOferta: campos.produto === "creditoPessoal" ? campos.possuiOferta : "",
+      // status "digitado" só vira "pago" quando a supervisora confirma o pagamento (só ela edita isso)
+      status: campos.status || "digitado",
+      // rastro de quem lançou/editou, pra manter transparência com vários usuários no sistema
+      criadoPor: editandoId ? (producoes.find((p) => p.id === editandoId)?.criadoPor || quemEstaMexendo) : quemEstaMexendo,
+      ...(editandoId ? { editadoPor: quemEstaMexendo, editadoEm: new Date().toISOString() } : {}),
     };
 
-    const novaLista = editandoId ? producoes.map((p) => (p.id === editandoId ? registro : p)) : [...producoes, registro];
-    const r = await salvarProducoes(novaLista);
+    const idAlvo = editandoId;
+    const r = await salvarProducaoUnica((listaFresca) =>
+      idAlvo ? listaFresca.map((p) => (p.id === idAlvo ? registro : p)) : [...listaFresca, registro]
+    );
     if (r.ok) setMensagem({ tipo: "sucesso", texto: editandoId ? "Produção atualizada! Já refletida na Matinal, Painel e Parcial." : "Produção registrada! Já refletida na Matinal, Painel e Parcial." });
     else setMensagem({ tipo: "erro", texto: `Salvo nesta sessão (${r.erro}) — já aparece nas outras telas agora, mas pode não persistir ao recarregar.` });
     limparCampos();
@@ -1678,13 +2039,13 @@ function TelaCentralProducao({ producoes, salvarProducoes, consultores, consulto
   function editar(p) {
     setCampos({ cliente: p.cliente, cpf: p.cpf, telefone: p.telefone, adesao: p.adesao, data: p.data || todayISO(),
       produto: p.produto, valor: p.valor, consultorId: p.consultorId,
-      tipoCredito: p.tipoCredito || "", proximoRefin: p.proximoRefin || "", possuiOferta: p.possuiOferta || "sim" });
+      tipoCredito: p.tipoCredito || "", proximoRefin: p.proximoRefin || "", possuiOferta: p.possuiOferta || "sim",
+      status: p.status || "digitado" });
     setEditandoId(p.id);
   }
 
   async function excluir(id) {
-    const novaLista = producoes.filter((p) => p.id !== id);
-    const r = await salvarProducoes(novaLista);
+    const r = await salvarProducaoUnica((listaFresca) => listaFresca.filter((p) => p.id !== id));
     if (!r.ok) setMensagem({ tipo: "erro", texto: `Excluído aqui, mas não confirmado no armazenamento (${r.erro}).` });
     setTimeout(() => setMensagem(null), 5000);
   }
@@ -1796,6 +2157,21 @@ function TelaCentralProducao({ producoes, salvarProducoes, consultores, consulto
               </Campo>
             )}
           </div>
+
+          {/* visível pra todo mundo — supervisora e consultor(a) — na criação e na edição. */}
+          <div className="mt-4">
+            <p className="block text-[11px] text-slate-400 mb-1">Status</p>
+            <div className="flex gap-1.5 max-w-xs">
+              <button type="button" onClick={() => setCampos({ ...campos, status: "digitado" })}
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-bold border transition ${(campos.status || "digitado") === "digitado" ? "bg-amber-500 text-white border-amber-500" : "border-violet-100 text-slate-500"}`}>
+                <Clock size={13} /> Digitado
+              </button>
+              <button type="button" onClick={() => setCampos({ ...campos, status: "pago" })}
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-bold border transition ${campos.status === "pago" ? "bg-green-600 text-white border-green-600" : "border-violet-100 text-slate-500"}`}>
+                <CheckCircle2 size={13} /> Pago
+              </button>
+            </div>
+          </div>
         </div>
         <p className="text-[11px] text-violet-300 mt-4">* Campos obrigatórios</p>
       </div>
@@ -1817,20 +2193,32 @@ function TelaCentralProducao({ producoes, salvarProducoes, consultores, consulto
               <thead>
                 <tr className="text-left text-[10px] font-bold tracking-wide text-slate-400 border-b border-violet-100">
                   <th className="py-2 pr-3">#</th><th className="py-2 pr-3">Cliente</th><th className="py-2 pr-3">Data</th><th className="py-2 pr-3">Produto</th>
-                  <th className="py-2 pr-3">Tipo</th><th className="py-2 pr-3">Valor</th><th className="py-2 pr-3">Consultor</th><th className="py-2 pl-3 text-right">Ações</th>
+                  <th className="py-2 pr-3">Tipo</th><th className="py-2 pr-3">Valor</th><th className="py-2 pr-3">Consultor</th><th className="py-2 pr-3">Status</th><th className="py-2 pl-3 text-right sticky right-0 bg-white">Ações</th>
                 </tr>
               </thead>
               <tbody>
                 {producoesFiltradas.map((p, i) => (
                   <tr key={p.id} className="border-b border-violet-50">
                     <td className="py-2.5 pr-3 text-slate-400">{i + 1}</td>
-                    <td className="py-2.5 pr-3 font-semibold text-violet-950 whitespace-nowrap">{p.cliente}</td>
+                    <td className="py-2.5 pr-3 font-semibold text-violet-950 whitespace-nowrap">
+                      {p.cliente}
+                      {p.criadoPor && (
+                        <p className="text-[9px] font-normal text-slate-400 mt-0.5">
+                          {p.editadoPor ? `editado por ${p.editadoPor}` : `lançado por ${p.criadoPor}`}
+                        </p>
+                      )}
+                    </td>
                     <td className="py-2.5 pr-3 text-slate-500 whitespace-nowrap">{formatarData(p.data)}</td>
                     <td className="py-2.5 pr-3 text-violet-950 whitespace-nowrap">{nomeProduto(p.produto)}</td>
                     <td className="py-2.5 pr-3 text-slate-500">{p.tipoCredito || "–"}</td>
                     <td className="py-2.5 pr-3 font-bold text-violet-600 whitespace-nowrap">{formatBRL(p.valor)}</td>
                     <td className="py-2.5 pr-3 text-slate-600 whitespace-nowrap">{nomeConsultor(p.consultorId)}</td>
-                    <td className="py-2.5 pl-3">
+                    <td className="py-2.5 pr-3 whitespace-nowrap">
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${(!p.status || p.status === "digitado") ? "bg-amber-50 text-amber-600" : "bg-green-50 text-green-600"}`}>
+                        {(!p.status || p.status === "digitado") ? "Digitado" : "Pago"}
+                      </span>
+                    </td>
+                    <td className="py-2.5 pl-3 sticky right-0 bg-white">
                       <div className="flex justify-end gap-1.5">
                         <button onClick={() => editar(p)} className="w-7 h-7 rounded-lg border border-violet-100 flex items-center justify-center text-violet-600 hover:bg-violet-50 transition"><Pencil size={12} /></button>
                         <button onClick={() => excluir(p.id)} className="w-7 h-7 rounded-lg border border-red-100 flex items-center justify-center text-red-500 hover:bg-red-50 transition"><Trash2 size={12} /></button>
@@ -1863,6 +2251,9 @@ function TelaConfiguracoes({ diasUteisMes, diasUteisPassados, salvarConfig, cons
   const [novoNome, setNovoNome] = useState("");
   const [novoExterno, setNovoExterno] = useState(false);
   const [consultorExpandido, setConsultorExpandido] = useState(null);
+  const [pinsVisiveis, setPinsVisiveis] = useState({});
+  const [mostrarPinSupervisor, setMostrarPinSupervisor] = useState(false);
+  const [pinSalvo, setPinSalvo] = useState(null);
 
   const abas = [
     { id: "geral", label: "Geral" },
@@ -1880,7 +2271,7 @@ function TelaConfiguracoes({ diasUteisMes, diasUteisPassados, salvarConfig, cons
   }
 
   const mixRascunhoTotal = ["creditoPessoal", "consignado", "clt", "antecipacao"].reduce((s, pid) => s + (Number(metaLojaRascunho[pid]) || 0), 0);
-  const somaIndividuais = consultores.reduce((acc, c) => acc + metaIndividualConsultorMix(c.id), 0);
+  const somaIndividuais = consultores.filter((c) => !c.externo).reduce((acc, c) => acc + metaIndividualConsultorMix(c.id), 0);
   const diferencaLoja = mixRascunhoTotal - somaIndividuais;
 
   function handleAdicionar() {
@@ -1933,8 +2324,14 @@ function TelaConfiguracoes({ diasUteisMes, diasUteisPassados, salvarConfig, cons
             <p className="text-[11px] text-slate-400 mb-3">Esse é o PIN que você usa pra entrar como Supervisor. Enquanto estiver em branco, qualquer PIN funciona.</p>
             <div className="flex items-end gap-3">
               <Campo label="PIN (4 a 6 dígitos)">
-                <input type="text" inputMode="numeric" maxLength={6} value={pinRascunho} onChange={(e) => setPinRascunho(e.target.value.replace(/\D/g, ""))}
-                  placeholder="Ex: 1234" className={inputClass + " mb-0 max-w-[160px]"} />
+                <div className="relative max-w-[160px]">
+                  <input type={mostrarPinSupervisor ? "text" : "password"} inputMode="numeric" maxLength={6} value={pinRascunho} onChange={(e) => setPinRascunho(e.target.value.replace(/\D/g, ""))}
+                    placeholder="Ex: 1234" className={inputClass + " mb-0 pr-9"} />
+                  <button type="button" onClick={() => setMostrarPinSupervisor(!mostrarPinSupervisor)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-violet-300 hover:text-violet-600 transition">
+                    {mostrarPinSupervisor ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
               </Campo>
               <button onClick={() => { salvarConfig(undefined, undefined, undefined, pinRascunho); setSalvo("pin"); setTimeout(() => setSalvo(null), 3000); }}
                 className="rounded-xl bg-violet-600 text-white px-4 py-2.5 text-xs font-bold hover:bg-violet-700 transition">Salvar PIN</button>
@@ -2090,9 +2487,21 @@ function TelaConfiguracoes({ diasUteisMes, diasUteisPassados, salvarConfig, cons
                       <input type="checkbox" checked={!!c.externo} onChange={(e) => atualizarConsultorCampo(c.id, "externo", e.target.checked)} className="accent-violet-600" />
                       Consultor externo (não entra na meta/produção da loja)
                     </label>
-                    <Campo label="PIN de acesso (4 dígitos)">
-                      <input type="text" inputMode="numeric" maxLength={6} value={c.pin || ""} onChange={(e) => atualizarConsultorCampo(c.id, "pin", e.target.value.replace(/\D/g, ""))}
-                        placeholder="Ex.: 1234" className={inputClass + " mb-0 max-w-[140px]"} />
+                    <Campo label="PIN de acesso (4 a 6 dígitos)">
+                      <div className="flex items-end gap-2">
+                        <div className="relative max-w-[140px]">
+                          <input type={pinsVisiveis[c.id] ? "text" : "password"} inputMode="numeric" maxLength={6} value={c.pin || ""}
+                            onChange={(e) => atualizarConsultorCampo(c.id, "pin", e.target.value.replace(/\D/g, ""))}
+                            placeholder="Ex.: 1234" className={inputClass + " mb-0 pr-9"} />
+                          <button type="button" onClick={() => setPinsVisiveis((v) => ({ ...v, [c.id]: !v[c.id] }))}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-violet-300 hover:text-violet-600 transition">
+                            {pinsVisiveis[c.id] ? <EyeOff size={14} /> : <Eye size={14} />}
+                          </button>
+                        </div>
+                        <button onClick={() => { atualizarConsultorCampo(c.id, "pin", c.pin || ""); setPinSalvo(c.id); setTimeout(() => setPinSalvo(null), 2500); }}
+                          className="rounded-xl bg-violet-600 text-white px-3 py-2.5 text-[11px] font-bold hover:bg-violet-700 transition">Salvar PIN</button>
+                      </div>
+                      {pinSalvo === c.id && <p className="text-[10px] text-green-600 font-semibold mt-1.5 flex items-center gap-1"><CheckCircle2 size={11} /> PIN salvo!</p>}
                     </Campo>
                     {!c.externo && (
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -2160,6 +2569,8 @@ function formatarDataCurta(d) {
 }
 
 function TelaRelatorios({ producoes, acionamentos, consultores, metaLojaProdutoTotal, metaSeguroUnid }) {
+  const idsExternos = new Set(consultores.filter((c) => c.externo).map((c) => c.id));
+  const consultoresLoja = consultores.filter((c) => !c.externo);
   const [periodo, setPeriodo] = useState("mes");
   const [dataInicioCustom, setDataInicioCustom] = useState(todayISO());
   const [dataFimCustom, setDataFimCustom] = useState(todayISO());
@@ -2201,6 +2612,8 @@ function TelaRelatorios({ producoes, acionamentos, consultores, metaLojaProdutoT
     return lista.filter((p) => {
       if (p.data < ini || p.data > f) return false;
       if (filtroConsultor !== "todos" && p.consultorId !== filtroConsultor) return false;
+      // na visão "Todos os Consultores", externos não entram na produção/meta da loja
+      if (filtroConsultor === "todos" && idsExternos.has(p.consultorId)) return false;
       if (filtroProduto !== "todos" && p.produto !== filtroProduto) return false;
       return true;
     });
@@ -2231,8 +2644,8 @@ function TelaRelatorios({ producoes, acionamentos, consultores, metaLojaProdutoT
       : metaLojaProdutoTotal(produtoId);
     return (metaMensal / DIAS_UTEIS_MES_PADRAO) * diasUteisPeriodo;
   }
-  const metaSeguroPeriodo = ((metaSeguroUnid * consultores.length) / DIAS_UTEIS_MES_PADRAO) * diasUteisPeriodo;
-  const metaAcionamentosPeriodo = META_ACIONAMENTOS_DIA_CONSULTOR * consultores.length * diasUteisPeriodo;
+  const metaSeguroPeriodo = ((metaSeguroUnid * consultoresLoja.length) / DIAS_UTEIS_MES_PADRAO) * diasUteisPeriodo;
+  const metaAcionamentosPeriodo = META_ACIONAMENTOS_DIA_CONSULTOR * consultoresLoja.length * diasUteisPeriodo;
 
   const cardsResumo = [
     { id: "total", nome: "Produção Total", valor: totalGeral, meta: metaDoPeriodo("mix"), variacao: variacaoTotal },
@@ -2262,11 +2675,11 @@ function TelaRelatorios({ producoes, acionamentos, consultores, metaLojaProdutoT
 
   // produção por consultor
   const producaoPorConsultor = useMemo(() => {
-    return consultores.map((c) => ({
+    return consultoresLoja.map((c) => ({
       nome: c.nome,
       valor: totalMix(producoesPeriodo.filter((p) => p.consultorId === c.id)),
     })).sort((a, b) => b.valor - a.valor);
-  }, [producoesPeriodo, consultores]);
+  }, [producoesPeriodo, consultoresLoja]);
 
   // produção por produto (para o gráfico de pizza)
   const producaoPorProdutoPizza = produtos.map((pid) => ({ name: NOMES_PRODUTO[pid], value: totalProduto(producoesPeriodo, pid), cor: CORES_PRODUTO[pid] })).filter((d) => d.value > 0);
@@ -2406,7 +2819,7 @@ function TelaRelatorios({ producoes, acionamentos, consultores, metaLojaProdutoT
               <LineChart data={evolucao} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#EDE9FE" />
                 <XAxis dataKey="data" tick={{ fontSize: 10, fill: "#94A3B8" }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 10, fill: "#94A3B8" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                <YAxis tick={{ fontSize: 10, fill: "#94A3B8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatBRLCurto(v)} />
                 <Tooltip formatter={(v) => formatBRL(v)} />
                 <Line type="monotone" dataKey="meta" stroke="#C4B5FD" strokeDasharray="5 5" dot={false} name="Meta acumulada" />
                 <Line type="monotone" dataKey="realizado" stroke="#7C3AED" strokeWidth={2.5} dot={{ r: 2 }} name="Realizado" />
@@ -2442,7 +2855,7 @@ function TelaRelatorios({ producoes, acionamentos, consultores, metaLojaProdutoT
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={producaoPorConsultor} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#EDE9FE" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 10, fill: "#94A3B8" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                <XAxis type="number" tick={{ fontSize: 10, fill: "#94A3B8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatBRLCurto(v)} />
                 <YAxis type="category" dataKey="nome" tick={{ fontSize: 11, fill: "#2A1B54" }} axisLine={false} tickLine={false} width={70} />
                 <Tooltip formatter={(v) => formatBRL(v)} />
                 <Bar dataKey="valor" fill="#6D4FD1" radius={[0, 6, 6, 0]} />
@@ -2507,6 +2920,29 @@ function TelaBackup({ producoes, acionamentos, oportunidadesManuais, salvarProdu
   const [textoImportar, setTextoImportar] = useState("");
   const [mensagem, setMensagem] = useState(null);
   const [copiado, setCopiado] = useState(false);
+  const [backupSeguranca, setBackupSeguranca] = useState(null);
+  const [carregandoBackup, setCarregandoBackup] = useState(false);
+
+  async function buscarBackupSeguranca() {
+    setCarregandoBackup(true);
+    setMensagem(null);
+    try {
+      const r = await window.storage.get(STORAGE_KEY + ":backup_anterior", false);
+      const lista = r ? JSON.parse(r.value) : [];
+      setBackupSeguranca(lista);
+    } catch (e) {
+      setBackupSeguranca([]);
+      setMensagem({ tipo: "erro", texto: "Ainda não existe um backup automático salvo (só passa a existir a partir do primeiro salvamento depois dessa atualização)." });
+    }
+    setCarregandoBackup(false);
+  }
+
+  async function restaurarBackupSeguranca() {
+    if (!backupSeguranca) return;
+    await salvarProducoes(backupSeguranca);
+    setMensagem({ tipo: "sucesso", texto: `Restaurado! ${backupSeguranca.length} produções recuperadas do backup automático.` });
+    setBackupSeguranca(null);
+  }
 
   const dadosAtuais = { producoes, acionamentos, oportunidadesManuais, exportadoEm: new Date().toISOString() };
   const jsonExport = JSON.stringify(dadosAtuais, null, 2);
@@ -2515,6 +2951,7 @@ function TelaBackup({ producoes, acionamentos, oportunidadesManuais, salvarProdu
     try {
       await navigator.clipboard.writeText(jsonExport);
       setCopiado(true);
+      try { window.localStorage.setItem("radar:ultimoBackupManual", new Date().toISOString()); } catch (e) {}
       setTimeout(() => setCopiado(false), 2500);
     } catch (e) {
       setMensagem({ tipo: "erro", texto: "Não consegui copiar automaticamente. Selecione o texto manualmente." });
@@ -2553,6 +2990,28 @@ function TelaBackup({ producoes, acionamentos, oportunidadesManuais, salvarProdu
       <div className="rounded-2xl bg-amber-50 border border-amber-100 px-4 py-3 text-xs text-amber-700 flex items-start gap-2">
         <AlertCircle size={14} className="shrink-0 mt-0.5" />
         O salvamento automático (nuvem) está instável no momento. Use esta tela pra copiar seus dados antes de fechar, e colar de volta quando reabrir o sistema.
+      </div>
+
+      <div className="rounded-2xl border border-violet-100 bg-white p-4 sm:p-6">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-extrabold text-violet-950 flex items-center gap-2"><Shield size={16} className="text-green-600" /> Backup automático de segurança</h2>
+          <button onClick={buscarBackupSeguranca} disabled={carregandoBackup} className="flex items-center gap-1.5 rounded-xl bg-green-600 text-white px-3.5 py-2 text-xs font-bold hover:bg-green-700 transition disabled:opacity-50">
+            <RefreshCw size={13} /> {carregandoBackup ? "Buscando..." : "Ver última cópia salva"}
+          </button>
+        </div>
+        <p className="text-[11px] text-slate-400 mb-3">
+          A cada vez que uma produção é salva, o sistema guarda uma cópia da versão anterior automaticamente — sem você precisar fazer nada. Use aqui se precisar recuperar depois de algum problema.
+        </p>
+        {backupSeguranca !== null && (
+          <div className="rounded-xl bg-violet-50 border border-violet-100 px-3 py-3 space-y-2">
+            <p className="text-xs font-bold text-violet-950">{backupSeguranca.length} produções encontradas nesse backup.</p>
+            {backupSeguranca.length > 0 && (
+              <button onClick={restaurarBackupSeguranca} className="flex items-center gap-1.5 rounded-xl bg-violet-600 text-white px-3.5 py-2 text-xs font-bold hover:bg-violet-700 transition">
+                <Upload size={13} /> Restaurar essa versão agora
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="rounded-2xl border border-violet-100 bg-white p-4 sm:p-6">
