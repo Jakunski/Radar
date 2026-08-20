@@ -1,4 +1,4 @@
-import { doc, getDoc, setDoc, deleteDoc, collection, getDocs } from "firebase/firestore";
+import { doc, getDoc, setDoc, deleteDoc, collection, getDocs, runTransaction } from "firebase/firestore";
 import { db, firebaseConfigured } from "./firebaseConfig.js";
 
 // Mesma ideia do storagePolyfill.js (localStorage), só que aqui os dados
@@ -55,6 +55,31 @@ function ativarStorageFirestore() {
       const snap = await getDocs(collection(db, COLLECTION));
       const keys = snap.docs.map((d) => d.id).filter((k) => !prefix || k.startsWith(prefix));
       return { keys, prefix, shared: false };
+    },
+
+    // Atualização atômica: lê o valor atual, aplica a mudança, e salva —
+    // tudo isso como UMA ÚNICA operação garantida pelo banco de dados.
+    // Se duas pessoas em computadores diferentes chamarem isso ao mesmo
+    // tempo, o Firestore enfileira e reprocessa automaticamente pra
+    // nenhuma das duas mudanças se perder — diferente de "buscar, mudar,
+    // salvar" em passos separados, onde dava pra uma sobrescrever a outra.
+    async updateAtomico(key, funcaoMudanca) {
+      const ref = doc(db, COLLECTION, key);
+      let novoValor;
+      try {
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(ref);
+          const listaAtual = snap.exists() ? JSON.parse(snap.data().value) : [];
+          const novaLista = funcaoMudanca(listaAtual);
+          novoValor = novaLista;
+          tx.set(ref, { value: JSON.stringify(novaLista), atualizadoEm: new Date().toISOString() });
+        });
+      } catch (e) {
+        const erroDeRede = new Error(`Falha ao atualizar "${key}" de forma atômica: ${e?.message || e}`);
+        erroDeRede.isNetworkError = true;
+        throw erroDeRede;
+      }
+      return { key, value: novoValor, shared: false };
     },
   };
 

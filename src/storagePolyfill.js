@@ -38,6 +38,16 @@ function ensureStorage() {
       );
       return { keys, prefix, shared: false };
     },
+
+    // versão simples (não-atômica de verdade, mas localStorage já é só
+    // deste navegador mesmo, então não tem outro dispositivo disputando)
+    async updateAtomico(key, funcaoMudanca) {
+      const raw = window.localStorage.getItem(key);
+      const listaAtual = raw !== null ? JSON.parse(raw) : [];
+      const novaLista = funcaoMudanca(listaAtual);
+      window.localStorage.setItem(key, JSON.stringify(novaLista));
+      return { key, value: novaLista, shared: false };
+    },
   };
 }
 

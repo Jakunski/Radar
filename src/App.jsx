@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   Radar, Calendar, Sun, RefreshCw, Sunrise, Mic, Bot,
   AlertTriangle, Trophy, Target, Sparkles, Bell,
@@ -8,7 +8,7 @@ import {
   User, CreditCard, Briefcase, Search, RotateCcw, Plus, Pencil, Trash2, AlertCircle,
   Phone, MessageCircle, MoreHorizontal, ImageIcon, ArrowLeftRight, Users, Filter, X,
   Download, Upload, Copy, Shield, LogOut, Eye, EyeOff, ArrowRight,
-  FileSpreadsheet, FileText, Printer, Share2, SlidersHorizontal
+  FileSpreadsheet, FileText, Printer, Share2, SlidersHorizontal, WifiOff
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, BarChart, Bar, Legend } from "recharts";
 
@@ -110,6 +110,19 @@ export default function RadarSistema() {
   const [oportunidadesManuais, setOportunidadesManuais] = useState([]);
   const [loading, setLoading] = useState(true);
   const [erroCarregamento, setErroCarregamento] = useState(false);
+  // indicador de conexão — avisa ANTES de tentar lançar algo com internet ruim
+  const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  useEffect(() => {
+    function ficouOnline() { setOnline(true); }
+    function ficouOffline() { setOnline(false); }
+    window.addEventListener("online", ficouOnline);
+    window.addEventListener("offline", ficouOffline);
+    return () => {
+      window.removeEventListener("online", ficouOnline);
+      window.removeEventListener("offline", ficouOffline);
+    };
+  }, []);
+
   const [diasUteisMes, setDiasUteisMes] = useState(DIAS_UTEIS_MES_PADRAO);
   const [diasUteisPassados, setDiasUteisPassados] = useState(DIAS_UTEIS_PASSADOS_PADRAO);
   const [consultores, setConsultores] = useState(CONSULTORES_PADRAO);
@@ -120,6 +133,33 @@ export default function RadarSistema() {
   });
   const [metaSeguroUnid, setMetaSeguroUnid] = useState(META_SEGURO_UNID_PADRAO);
   const [supervisorPin, setSupervisorPin] = useState("");
+  // ---- bloqueio automático por inatividade ----
+  // depois de um tempo sem uso, a tela trava e pede o PIN de novo — protege
+  // contra alguém deixar o sistema aberto sem querer num computador
+  // compartilhado. Só bloqueia se o perfil logado tiver um PIN configurado
+  // (senão não há o que validar pra desbloquear).
+  const MINUTOS_INATIVIDADE = 5;
+  const [travado, setTravado] = useState(false);
+  const ultimaAtividadeRef = useRef(Date.now());
+  useEffect(() => {
+    function registrarAtividade() { ultimaAtividadeRef.current = Date.now(); }
+    ["mousedown", "keydown", "touchstart", "scroll"].forEach((ev) => window.addEventListener(ev, registrarAtividade));
+    const intervalo = setInterval(() => {
+      const pinDoPerfilAtual = perfil === "supervisora" ? supervisorPin : (consultores.find((c) => c.id === consultorLogadoId)?.pin || "");
+      const temPinConfigurado = pinDoPerfilAtual && pinDoPerfilAtual.trim();
+      if (logado && temPinConfigurado && !travado && Date.now() - ultimaAtividadeRef.current > MINUTOS_INATIVIDADE * 60 * 1000) {
+        setTravado(true);
+      }
+    }, 15000);
+    return () => {
+      ["mousedown", "keydown", "touchstart", "scroll"].forEach((ev) => window.removeEventListener(ev, registrarAtividade));
+      clearInterval(intervalo);
+    };
+  }, [logado, perfil, consultorLogadoId, supervisorPin, consultores, travado]);
+  function desbloquear() {
+    ultimaAtividadeRef.current = Date.now();
+    setTravado(false);
+  }
   const [supervisorFoto, setSupervisorFoto] = useState(null);
   const [metaLojaPorProduto, setMetaLojaPorProduto] = useState(() => {
     const obj = {};
@@ -245,36 +285,39 @@ export default function RadarSistema() {
   }
 
   // Pra ADICIONAR/EDITAR/EXCLUIR uma única produção com várias pessoas
-  // usando o sistema ao mesmo tempo em computadores diferentes: em vez de
-  // partir da lista que já está aberta na tela (que pode estar um pouco
-  // desatualizada em relação ao que outro consultor acabou de salvar),
-  // buscamos a versão mais recente do banco bem na hora de salvar, e só
-  // então aplicamos a mudança. Isso reduz muito a chance de um lançamento
-  // de alguém "sumir" por causa de outro salvamento simultâneo.
+  // usando o sistema ao mesmo tempo em computadores diferentes: usamos uma
+  // atualização ATÔMICA do banco (ler + mudar + salvar como uma coisa só,
+  // garantida pelo Firestore). Se duas pessoas salvarem no mesmo instante,
+  // o banco processa uma de cada vez e NENHUMA fica de fora — diferente de
+  // buscar e salvar em passos separados, onde uma podia sobrescrever a
+  // outra se caíssem no mesmo segundo.
   async function salvarProducaoUnica(funcaoMudanca) {
-    let listaBase = producoes;
     try {
-      const atual = await window.storage.get(STORAGE_KEY, false);
-      if (atual) listaBase = JSON.parse(atual.value);
-    } catch (e) { /* se não conseguir buscar a versão mais recente, segue com a local mesmo */ }
-    const novaLista = funcaoMudanca(listaBase);
-    return salvarProducoes(novaLista);
+      // guarda um backup da versão de antes, best-effort (não trava o salvamento se falhar)
+      try {
+        const antes = await window.storage.get(STORAGE_KEY, false);
+        if (antes) await window.storage.set(STORAGE_KEY + ":backup_anterior", antes.value, false);
+      } catch (e) { /* segue mesmo assim */ }
+      const r = await window.storage.updateAtomico(STORAGE_KEY, funcaoMudanca);
+      setProducoes(r.value); // atualiza a tela com o que realmente ficou salvo no banco
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, erro: e?.message || String(e) };
+    }
   }
   async function salvarAcionamentos(novaLista) {
     setAcionamentos(novaLista);
     return persistir(ACIONAMENTOS_KEY, novaLista);
   }
-  // mesmo cuidado dos lançamentos de produção: busca a versão mais recente
-  // do banco antes de aplicar a mudança, pra reduzir conflito entre
-  // consultores lançando acionamentos ao mesmo tempo em telas diferentes.
+  // mesma proteção atômica dos lançamentos de produção
   async function salvarAcionamentoUnico(funcaoMudanca) {
-    let listaBase = acionamentos;
     try {
-      const atual = await window.storage.get(ACIONAMENTOS_KEY, false);
-      if (atual) listaBase = JSON.parse(atual.value);
-    } catch (e) { /* segue com a local se não conseguir buscar */ }
-    const novaLista = funcaoMudanca(listaBase);
-    return salvarAcionamentos(novaLista);
+      const r = await window.storage.updateAtomico(ACIONAMENTOS_KEY, funcaoMudanca);
+      setAcionamentos(r.value);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, erro: e?.message || String(e) };
+    }
   }
   async function salvarOportunidades(novaLista) {
     setOportunidadesManuais(novaLista);
@@ -284,36 +327,55 @@ export default function RadarSistema() {
   // ---- gerenciamento de consultores e metas individuais (agora com persistência real) ----
   async function adicionarConsultor(nome, externo = false) {
     const id = `${nome.toLowerCase().trim().replace(/\s+/g, "-")}-${Date.now()}`;
-    const novosConsultores = [...consultores, { id, nome: nome.trim(), foto: null, externo, pin: "" }];
-    const novasMetas = { ...metasIndividuais, [id]: { creditoPessoal: 0, consignado: 0, clt: 0, antecipacao: 0 } };
-    setConsultores(novosConsultores);
-    setMetasIndividuais(novasMetas);
-    await persistir(CONSULTORES_KEY, novosConsultores);
-    await persistir(METAS_INDIVIDUAIS_KEY, novasMetas);
+    try {
+      const rc = await window.storage.updateAtomico(CONSULTORES_KEY, (lista) => [...(lista || []), { id, nome: nome.trim(), foto: null, externo, pin: "" }]);
+      setConsultores(rc.value);
+    } catch (e) { /* mantemos o botão respondendo mesmo se a persistência remota falhar */ }
+    try {
+      const rm = await window.storage.updateAtomico(METAS_INDIVIDUAIS_KEY, (obj) => {
+        const base = (Array.isArray(obj) ? {} : obj) || {};
+        return { ...base, [id]: { creditoPessoal: 0, consignado: 0, clt: 0, antecipacao: 0 } };
+      });
+      setMetasIndividuais(rm.value);
+    } catch (e) {}
   }
   async function removerConsultor(id) {
-    const novosConsultores = consultores.filter((c) => c.id !== id);
-    const novasMetas = { ...metasIndividuais };
-    delete novasMetas[id];
-    setConsultores(novosConsultores);
-    setMetasIndividuais(novasMetas);
-    await persistir(CONSULTORES_KEY, novosConsultores);
-    await persistir(METAS_INDIVIDUAIS_KEY, novasMetas);
+    try {
+      const rc = await window.storage.updateAtomico(CONSULTORES_KEY, (lista) => (lista || []).filter((c) => c.id !== id));
+      setConsultores(rc.value);
+    } catch (e) {}
+    try {
+      const rm = await window.storage.updateAtomico(METAS_INDIVIDUAIS_KEY, (obj) => {
+        const base = { ...((Array.isArray(obj) ? {} : obj) || {}) };
+        delete base[id];
+        return base;
+      });
+      setMetasIndividuais(rm.value);
+    } catch (e) {}
   }
   async function atualizarFotoConsultor(id, fotoDataUrl) {
-    const novosConsultores = consultores.map((c) => (c.id === id ? { ...c, foto: fotoDataUrl } : c));
-    setConsultores(novosConsultores);
-    await persistir(CONSULTORES_KEY, novosConsultores);
+    try {
+      const r = await window.storage.updateAtomico(CONSULTORES_KEY, (lista) => (lista || []).map((c) => (c.id === id ? { ...c, foto: fotoDataUrl } : c)));
+      setConsultores(r.value);
+    } catch (e) {}
   }
   async function atualizarConsultorCampo(id, campo, valor) {
-    const novosConsultores = consultores.map((c) => (c.id === id ? { ...c, [campo]: valor } : c));
-    setConsultores(novosConsultores);
-    await persistir(CONSULTORES_KEY, novosConsultores);
+    try {
+      const r = await window.storage.updateAtomico(CONSULTORES_KEY, (lista) => (lista || []).map((c) => (c.id === id ? { ...c, [campo]: valor } : c)));
+      setConsultores(r.value);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, erro: e?.message || String(e) };
+    }
   }
   async function atualizarMetaIndividual(id, produtoId, valor) {
-    const novasMetas = { ...metasIndividuais, [id]: { ...(metasIndividuais[id] || {}), [produtoId]: Number(valor) || 0 } };
-    setMetasIndividuais(novasMetas);
-    await persistir(METAS_INDIVIDUAIS_KEY, novasMetas);
+    try {
+      const r = await window.storage.updateAtomico(METAS_INDIVIDUAIS_KEY, (obj) => {
+        const base = (Array.isArray(obj) ? {} : obj) || {};
+        return { ...base, [id]: { ...(base[id] || {}), [produtoId]: Number(valor) || 0 } };
+      });
+      setMetasIndividuais(r.value);
+    } catch (e) {}
   }
 
   // ---- cálculos compartilhados (usados por Matinal, Painel e Parcial) ----
@@ -358,9 +420,13 @@ export default function RadarSistema() {
     return Number(metaLojaPorProduto[produtoId]) || 0;
   }
   async function atualizarMetaLojaProduto(produtoId, valor) {
-    const novasMetasLoja = { ...metaLojaPorProduto, [produtoId]: Number(valor) || 0 };
-    setMetaLojaPorProduto(novasMetasLoja);
-    await persistir(METAS_LOJA_KEY, novasMetasLoja);
+    try {
+      const r = await window.storage.updateAtomico(METAS_LOJA_KEY, (obj) => {
+        const base = (Array.isArray(obj) ? {} : obj) || {};
+        return { ...base, [produtoId]: Number(valor) || 0 };
+      });
+      setMetaLojaPorProduto(r.value);
+    } catch (e) {}
   }
   // salva os 4 produtos de uma vez só — evita o bug de chamadas sequenciais lerem
   // o mesmo estado "velho" e se sobrescreverem umas às outras
@@ -371,26 +437,41 @@ export default function RadarSistema() {
       clt: Number(novoObjeto.clt) || 0,
       antecipacao: Number(novoObjeto.antecipacao) || 0,
     };
-    setMetaLojaPorProduto(limpo);
-    await persistir(METAS_LOJA_KEY, limpo);
+    try {
+      const r = await window.storage.updateAtomico(METAS_LOJA_KEY, () => limpo);
+      setMetaLojaPorProduto(r.value);
+    } catch (e) {
+      setMetaLojaPorProduto(limpo); // mantém a tela atualizada mesmo se a persistência remota falhar
+    }
   }
   const metaLojaMix = ["creditoPessoal", "consignado", "clt", "antecipacao"].reduce((s, p) => s + metaLojaProdutoTotal(p), 0);
 
   async function salvarConfig(novoDiasUteisMes, novoDiasUteisPassados, novoMetaSeguroUnid, novoSupervisorPin, novoSupervisorFoto) {
-    const cfg = {
-      diasUteisMes: novoDiasUteisMes ?? diasUteisMes,
-      diasUteisPassados: novoDiasUteisPassados ?? diasUteisPassados,
-      metaSeguroUnid: novoMetaSeguroUnid ?? metaSeguroUnid,
-      supervisorPin: novoSupervisorPin ?? supervisorPin,
-      supervisorFoto: novoSupervisorFoto ?? supervisorFoto,
-    };
     if (novoDiasUteisMes !== undefined) setDiasUteisMes(novoDiasUteisMes);
     if (novoDiasUteisPassados !== undefined) setDiasUteisPassados(novoDiasUteisPassados);
     if (novoMetaSeguroUnid !== undefined) setMetaSeguroUnid(novoMetaSeguroUnid);
     if (novoSupervisorPin !== undefined) setSupervisorPin(novoSupervisorPin);
     if (novoSupervisorFoto !== undefined) setSupervisorFoto(novoSupervisorFoto);
-    await persistir(CONFIG_KEY, cfg);
+    // atualização atômica: lê o que está de verdade no banco, mescla só os
+    // campos que mudaram, e salva — evita perder configuração por causa de
+    // duas mudanças salvas quase juntas (ex.: PIN + dias úteis)
+    try {
+      const r = await window.storage.updateAtomico(CONFIG_KEY, (atual) => {
+        const base = (atual && typeof atual === "object" && !Array.isArray(atual)) ? atual : {};
+        return {
+          diasUteisMes: novoDiasUteisMes ?? base.diasUteisMes ?? diasUteisMes,
+          diasUteisPassados: novoDiasUteisPassados ?? base.diasUteisPassados ?? diasUteisPassados,
+          metaSeguroUnid: novoMetaSeguroUnid ?? base.metaSeguroUnid ?? metaSeguroUnid,
+          supervisorPin: novoSupervisorPin ?? base.supervisorPin ?? supervisorPin,
+          supervisorFoto: novoSupervisorFoto ?? base.supervisorFoto ?? supervisorFoto,
+        };
+      });
+      return { ok: true, valor: r.value };
+    } catch (e) {
+      return { ok: false, erro: e?.message || "Não consegui salvar. Verifique sua conexão e tente de novo." };
+    }
   }
+
 
   const ctx = {
     producoes, acionamentos, oportunidadesManuais, loading, diasUteisMes, diasUteisPassados,
@@ -448,10 +529,22 @@ export default function RadarSistema() {
     return <TelaLogin onEntrar={entrar} producaoMesLoja={producaoMesLojaGlobal} metaLojaMix={metaLojaMix} consultores={consultores} supervisorPin={supervisorPin} />;
   }
 
+  if (travado) {
+    const pinEsperado = perfil === "supervisora" ? supervisorPin : (consultores.find((c) => c.id === consultorLogadoId)?.pin || "");
+    const nomeAtual = perfil === "supervisora" ? "Letícia — Supervisora" : (consultores.find((c) => c.id === consultorLogadoId)?.nome || "Consultor(a)");
+    return <TelaBloqueada nome={nomeAtual} pinEsperado={pinEsperado} onDesbloquear={desbloquear} onSair={sair} />;
+  }
+
   return (
     <div className="min-h-screen w-full bg-violet-50 flex font-[Inter,sans-serif]">
       <Sidebar tela={telaEfetiva} setTela={setTela} onSair={sair} perfil={perfil} consultorLogado={consultorLogado} supervisorFoto={supervisorFoto} salvarConfig={salvarConfig} />
       <main className="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6 space-y-5">
+        {!online && (
+          <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <WifiOff size={16} className="flex-shrink-0" />
+            <span><strong>Sem conexão com a internet.</strong> Espera a conexão voltar antes de lançar produção — lançamentos feitos agora podem não salvar.</span>
+          </div>
+        )}
         {erroCarregamento && (
           <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             <AlertTriangle size={16} className="flex-shrink-0" />
@@ -616,6 +709,52 @@ function Sidebar({ tela, setTela, onSair, perfil, consultorLogado, supervisorFot
 // ============================================================
 // TELA: LOGIN
 // ============================================================
+function TelaBloqueada({ nome, pinEsperado, onDesbloquear, onSair }) {
+  const [pin, setPin] = useState("");
+  const [erro, setErro] = useState("");
+  const [mostrarPin, setMostrarPin] = useState(false);
+
+  function tentar(e) {
+    e.preventDefault();
+    if (pin !== pinEsperado) {
+      setErro("PIN incorreto.");
+      setPin("");
+      return;
+    }
+    onDesbloquear();
+  }
+
+  return (
+    <div className="min-h-screen w-full bg-violet-950/95 backdrop-blur-sm flex items-center justify-center p-4 font-[Inter,sans-serif]">
+      <form onSubmit={tentar} className="bg-white rounded-2xl shadow-2xl p-6 sm:p-8 w-full max-w-xs text-center space-y-4">
+        <div className="w-14 h-14 rounded-2xl bg-violet-100 flex items-center justify-center mx-auto">
+          <Shield size={26} className="text-violet-600" />
+        </div>
+        <div>
+          <h1 className="text-base font-extrabold text-violet-950">Sessão bloqueada</h1>
+          <p className="text-xs text-slate-400 mt-1">Por inatividade. Digite o PIN de <strong>{nome}</strong> para continuar.</p>
+        </div>
+        <div className="relative">
+          <input
+            type={mostrarPin ? "text" : "password"} inputMode="numeric" maxLength={6} autoFocus
+            value={pin} onChange={(e) => { setPin(e.target.value.replace(/\D/g, "")); setErro(""); }}
+            placeholder="PIN"
+            className="w-full text-center tracking-[0.5em] text-lg font-bold rounded-xl border border-violet-100 py-3 pr-10 focus:outline-none focus:ring-2 focus:ring-violet-300"
+          />
+          <button type="button" onClick={() => setMostrarPin(!mostrarPin)} className="absolute right-3 top-1/2 -translate-y-1/2 text-violet-300 hover:text-violet-600 transition">
+            {mostrarPin ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
+        </div>
+        {erro && <p className="text-xs font-semibold text-red-600">{erro}</p>}
+        <button type="submit" className="w-full rounded-xl bg-violet-600 text-white py-3 text-sm font-bold hover:bg-violet-700 transition">Desbloquear</button>
+        <button type="button" onClick={onSair} className="w-full text-xs text-slate-400 hover:text-slate-600 transition flex items-center justify-center gap-1.5">
+          <LogOut size={12} /> Sair e trocar de usuário
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function TelaLogin({ onEntrar, producaoMesLoja, metaLojaMix, consultores, supervisorPin }) {
   const [perfilEscolhido, setPerfilEscolhido] = useState("supervisora");
   const [consultorEscolhidoId, setConsultorEscolhidoId] = useState("");
@@ -1061,7 +1200,9 @@ function TelaMinhaProducao({ consultorLogadoId, consultores, consultoresLoja, me
                   <p className="text-xs font-semibold text-violet-950">{p.cliente}</p>
                   <p className="text-[10px] text-slate-400">{NOMES_PRODUTO[p.produto] || p.produto} · {formatarDataBR(p.data)}</p>
                 </div>
-                <span className="text-xs font-bold text-violet-600">{formatBRL(p.valor)}</span>
+                <span className="text-xs font-bold text-violet-600">
+                  {p.produto === "seguro" ? (p.valor > 0 ? `${formatBRL(p.valor)} (prêmio)` : "1 unidade") : formatBRL(p.valor)}
+                </span>
               </div>
             ))}
           </div>
@@ -2107,10 +2248,19 @@ function TelaCentralProducao({ producoes, salvarProducoes, salvarProducaoUnica, 
                 inputMode="decimal"
                 value={campos.valor}
                 onChange={(e) => {
-                  // aceita dígitos e uma vírgula/ponto decimal — nunca perde os centavos
+                  // aceita dígitos e separadores de milhar/decimal — o
+                  // ÚLTIMO separador digitado é sempre tratado como decimal,
+                  // e qualquer separador anterior a ele é removido (era só
+                  // separador de milhar, ex.: "1.500,00" → mantém "1500,00").
                   let v = e.target.value.replace(/[^0-9.,]/g, "");
-                  const partes = v.split(/[.,]/);
-                  if (partes.length > 2) v = partes[0] + "," + partes.slice(1).join("");
+                  const seps = v.match(/[.,]/g);
+                  if (seps && seps.length > 1) {
+                    const ultimoSep = seps[seps.length - 1];
+                    const posUltimo = v.lastIndexOf(ultimoSep);
+                    const parteInteira = v.slice(0, posUltimo).replace(/[.,]/g, "");
+                    const parteDecimal = v.slice(posUltimo + 1).replace(/[.,]/g, "");
+                    v = parteInteira + ultimoSep + parteDecimal;
+                  }
                   setCampos({ ...campos, valor: v });
                 }}
                 placeholder="0,00"
@@ -2211,7 +2361,9 @@ function TelaCentralProducao({ producoes, salvarProducoes, salvarProducaoUnica, 
                     <td className="py-2.5 pr-3 text-slate-500 whitespace-nowrap">{formatarData(p.data)}</td>
                     <td className="py-2.5 pr-3 text-violet-950 whitespace-nowrap">{nomeProduto(p.produto)}</td>
                     <td className="py-2.5 pr-3 text-slate-500">{p.tipoCredito || "–"}</td>
-                    <td className="py-2.5 pr-3 font-bold text-violet-600 whitespace-nowrap">{formatBRL(p.valor)}</td>
+                    <td className="py-2.5 pr-3 font-bold text-violet-600 whitespace-nowrap">
+                      {p.produto === "seguro" ? (p.valor > 0 ? `${formatBRL(p.valor)} (prêmio)` : "1 unidade") : formatBRL(p.valor)}
+                    </td>
                     <td className="py-2.5 pr-3 text-slate-600 whitespace-nowrap">{nomeConsultor(p.consultorId)}</td>
                     <td className="py-2.5 pr-3 whitespace-nowrap">
                       <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${(!p.status || p.status === "digitado") ? "bg-amber-50 text-amber-600" : "bg-green-50 text-green-600"}`}>
@@ -2333,10 +2485,18 @@ function TelaConfiguracoes({ diasUteisMes, diasUteisPassados, salvarConfig, cons
                   </button>
                 </div>
               </Campo>
-              <button onClick={() => { salvarConfig(undefined, undefined, undefined, pinRascunho); setSalvo("pin"); setTimeout(() => setSalvo(null), 3000); }}
-                className="rounded-xl bg-violet-600 text-white px-4 py-2.5 text-xs font-bold hover:bg-violet-700 transition">Salvar PIN</button>
+              <button onClick={async () => {
+                setSalvo("pin-salvando");
+                const r = await salvarConfig(undefined, undefined, undefined, pinRascunho);
+                setSalvo(r.ok ? "pin" : "pin-erro");
+                setTimeout(() => setSalvo(null), r.ok ? 3000 : 6000);
+              }}
+                className="rounded-xl bg-violet-600 text-white px-4 py-2.5 text-xs font-bold hover:bg-violet-700 transition disabled:opacity-60" disabled={salvo === "pin-salvando"}>
+                {salvo === "pin-salvando" ? "Salvando..." : "Salvar PIN"}
+              </button>
             </div>
-            {salvo === "pin" && <div className="mt-3 text-xs font-medium rounded-lg px-3 py-2 bg-green-50 text-green-700 flex items-center gap-2 max-w-xs"><CheckCircle2 size={14} /> PIN atualizado!</div>}
+            {salvo === "pin" && <div className="mt-3 text-xs font-medium rounded-lg px-3 py-2 bg-green-50 text-green-700 flex items-center gap-2 max-w-xs"><CheckCircle2 size={14} /> PIN atualizado e confirmado no banco!</div>}
+            {salvo === "pin-erro" && <div className="mt-3 text-xs font-medium rounded-lg px-3 py-2 bg-red-50 text-red-700 flex items-center gap-2 max-w-sm"><AlertTriangle size={14} className="flex-shrink-0" /> Não consegui confirmar o salvamento no banco (conexão instável). O PIN pode NÃO ter sido atualizado — tente de novo.</div>}
           </div>
         </div>
       )}
@@ -2498,10 +2658,18 @@ function TelaConfiguracoes({ diasUteisMes, diasUteisPassados, salvarConfig, cons
                             {pinsVisiveis[c.id] ? <EyeOff size={14} /> : <Eye size={14} />}
                           </button>
                         </div>
-                        <button onClick={() => { atualizarConsultorCampo(c.id, "pin", c.pin || ""); setPinSalvo(c.id); setTimeout(() => setPinSalvo(null), 2500); }}
-                          className="rounded-xl bg-violet-600 text-white px-3 py-2.5 text-[11px] font-bold hover:bg-violet-700 transition">Salvar PIN</button>
+                        <button onClick={async () => {
+                          setPinSalvo(`${c.id}-salvando`);
+                          const r = await atualizarConsultorCampo(c.id, "pin", c.pin || "");
+                          setPinSalvo(r?.ok === false ? `${c.id}-erro` : c.id);
+                          setTimeout(() => setPinSalvo(null), r?.ok === false ? 6000 : 2500);
+                        }} disabled={pinSalvo === `${c.id}-salvando`}
+                          className="rounded-xl bg-violet-600 text-white px-3 py-2.5 text-[11px] font-bold hover:bg-violet-700 transition disabled:opacity-60">
+                          {pinSalvo === `${c.id}-salvando` ? "Salvando..." : "Salvar PIN"}
+                        </button>
                       </div>
-                      {pinSalvo === c.id && <p className="text-[10px] text-green-600 font-semibold mt-1.5 flex items-center gap-1"><CheckCircle2 size={11} /> PIN salvo!</p>}
+                      {pinSalvo === c.id && <p className="text-[10px] text-green-600 font-semibold mt-1.5 flex items-center gap-1"><CheckCircle2 size={11} /> PIN salvo e confirmado no banco!</p>}
+                      {pinSalvo === `${c.id}-erro` && <p className="text-[10px] text-red-600 font-semibold mt-1.5 flex items-center gap-1"><AlertTriangle size={11} className="flex-shrink-0" /> Não confirmei o salvamento (conexão instável) — tente de novo.</p>}
                     </Campo>
                     {!c.externo && (
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -3158,13 +3326,13 @@ function TelaRadarComercial({ producoes, oportunidadesManuais, salvarOportunidad
         <div className="absolute -left-10 -bottom-16 w-52 h-52 rounded-full bg-violet-500 opacity-30 blur-3xl" />
         <div className="relative">
           <h1 className="text-2xl sm:text-3xl font-extrabold text-white">RADAR COMERCIAL</h1>
-          <p className="text-sm text-violet-200 mt-1">Encontre oportunidades, antecipe ofertas e transforme em produção.</p>
+          <p className="text-sm text-violet-200 mt-1">Sua carteira de clientes, com ofertas e oportunidades de recompra em destaque.</p>
         </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <button onClick={() => setFiltroRapido(null)} className="text-left">
-          <Kpi icon={<Users size={16} />} label="OPORTUNIDADES" value={`${todasOportunidades.length}`} sub="Toque para ver todas" ativo={filtroRapido === null} />
+          <Kpi icon={<Users size={16} />} label="CLIENTES CARTEIRA" value={`${todasOportunidades.length}`} sub="Toque para ver todas" ativo={filtroRapido === null} />
         </button>
         <button onClick={() => setFiltroRapido(filtroRapido === "oferta" ? null : "oferta")} className="text-left">
           <Kpi icon={<CheckCircle2 size={16} />} label="COM OFERTA" value={`${comOferta}`} sub="Toque para filtrar" accent="orange" ativo={filtroRapido === "oferta"} />
@@ -3223,7 +3391,7 @@ function TelaRadarComercial({ producoes, oportunidadesManuais, salvarOportunidad
 
         <div className="rounded-xl bg-violet-50 border border-violet-100 px-3.5 py-2.5 text-[11px] text-violet-500 mb-4 flex items-center gap-2">
           <AlertCircle size={13} className="shrink-0" />
-          Oportunidades com "Data do Próximo Refinanciamento" entram aqui automaticamente ao lançar Crédito Pessoal na Central de Produção.
+          Clientes com "Data do Próximo Refinanciamento" entram aqui automaticamente ao lançar Crédito Pessoal na Central de Produção.
         </div>
 
         {mostrarForm && (
@@ -3268,7 +3436,7 @@ function TelaRadarComercial({ producoes, oportunidadesManuais, salvarOportunidad
         )}
 
         {oportunidadesFiltradas.length === 0 ? (
-          <p className="text-xs text-slate-400 py-8 text-center">Nenhuma oportunidade encontrada com esses filtros.</p>
+          <p className="text-xs text-slate-400 py-8 text-center">Nenhum cliente encontrado com esses filtros.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs min-w-[820px]">
