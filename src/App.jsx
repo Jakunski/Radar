@@ -1856,6 +1856,7 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, salvarAci
   })();
   const [notas3cRascunho, setNotas3cRascunho] = useState({});
   const [salvando3c, setSalvando3c] = useState(null);
+  const [feedback3c, setFeedback3c] = useState(null); // { consultorId, tipo: 'ok'|'erro', msg }
   const notasDeOntem = useMemo(
     () => consultores.map((c) => {
       const registro = avaliacoes3c.find((a) => a.consultorId === c.id && a.data === diaAnterior3c);
@@ -1868,10 +1869,17 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, salvarAci
     const bruto = notas3cRascunho[consultorId];
     if (bruto === undefined) return;
     setSalvando3c(consultorId);
+    setFeedback3c(null);
     const notaNum = bruto === "" ? null : Math.max(0, Math.min(10, Number(bruto.replace(",", "."))));
-    await salvarAvaliacao3c(consultorId, diaAnterior3c, notaNum);
+    const r = await salvarAvaliacao3c(consultorId, diaAnterior3c, notaNum);
     setSalvando3c(null);
-    setNotas3cRascunho((prev) => { const p = { ...prev }; delete p[consultorId]; return p; });
+    if (r?.ok === false) {
+      setFeedback3c({ consultorId, tipo: "erro", msg: "Não salvou — tente de novo (conexão instável)." });
+    } else {
+      setFeedback3c({ consultorId, tipo: "ok", msg: "Nota salva!" });
+      setNotas3cRascunho((prev) => { const p = { ...prev }; delete p[consultorId]; return p; });
+      setTimeout(() => setFeedback3c((f) => (f?.consultorId === consultorId ? null : f)), 3000);
+    }
   }
 
   const evolucaoData = useMemo(() => {
@@ -2138,63 +2146,102 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, salvarAci
         </div>
       </div>
 
+      {/* CARD 1 — Lançar notas (só a supervisora insere aqui) */}
       <div className="rounded-2xl border border-violet-100 bg-white p-4 sm:p-6">
         <div className="flex items-center justify-between mb-1">
-          <h3 className="text-sm font-extrabold text-violet-950 flex items-center gap-2"><Phone size={16} className="text-violet-600" /> Avaliação 3C</h3>
+          <h3 className="text-sm font-extrabold text-violet-950 flex items-center gap-2"><Phone size={16} className="text-violet-600" /> Lançar Notas 3C</h3>
           <span className="text-[10px] font-semibold text-slate-400">Referente a {formatarDataBR(diaAnterior3c)}</span>
         </div>
-        <p className="text-[11px] text-slate-400 mb-4">Nota da IA que avalia as ligações do dia anterior — verde a partir de 6,0.</p>
-
-        {podio3c.length > 0 && (
-          <div className="flex items-end justify-center gap-3 mb-6 pt-2">
-            {[podio3c[1], podio3c[0], podio3c[2]].map((item, idx) => {
-              if (!item) return <div key={idx} className="w-20" />;
-              const posicao = item === podio3c[0] ? 1 : item === podio3c[1] ? 2 : 3;
-              const alturas = { 1: "h-20", 2: "h-14", 3: "h-10" };
-              const cores = { 1: "bg-amber-400", 2: "bg-slate-300", 3: "bg-amber-700" };
-              const corMedalha = { 1: "#FBBF24", 2: "#CBD5E1", 3: "#B45309" };
-              return (
-                <div key={item.consultor.id} className="flex flex-col items-center w-20">
-                  <Avatar nome={item.consultor.nome} foto={item.consultor.foto} size={36} />
-                  <p className="text-[10px] font-bold text-violet-950 mt-1 text-center leading-tight">{item.consultor.nome}</p>
-                  <p className="text-xs font-extrabold text-green-600">{item.nota.toFixed(1)}</p>
-                  <div className={`w-full rounded-t-lg ${alturas[posicao]} ${cores[posicao]} flex items-start justify-center pt-1.5 mt-1`}>
-                    <Medal size={18} color="#FFFFFF" fill={corMedalha[posicao]} strokeWidth={1.5} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        <p className="text-[11px] text-slate-400 mb-4">Digite a nota (0 a 10) que a IA 3C deu pras ligações de cada consultor(a) ontem.</p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {notasDeOntem.map(({ consultor, nota }) => {
             const emRascunho = notas3cRascunho[consultor.id];
             const valorCampo = emRascunho !== undefined ? emRascunho : (nota !== null ? String(nota).replace(".", ",") : "");
             const corNota = nota === null ? "text-slate-300" : nota >= 6 ? "text-green-600" : "text-red-500";
+            const fb = feedback3c?.consultorId === consultor.id ? feedback3c : null;
             return (
-              <div key={consultor.id} className="rounded-xl border border-violet-100 p-3 flex items-center gap-3">
-                <Avatar nome={consultor.nome} foto={consultor.foto} size={32} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-bold text-violet-950 truncate">{consultor.nome}</p>
-                  <p className={`text-lg font-extrabold ${corNota}`}>{nota !== null ? nota.toFixed(1) : "—"}</p>
+              <div key={consultor.id} className="rounded-xl border border-violet-100 p-3">
+                <div className="flex items-center gap-3">
+                  <Avatar nome={consultor.nome} foto={consultor.foto} size={32} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-bold text-violet-950 truncate">{consultor.nome}</p>
+                    <p className={`text-lg font-extrabold ${corNota}`}>{nota !== null ? nota.toFixed(1) : "—"}</p>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      value={valorCampo}
+                      onChange={(e) => { setNotas3cRascunho((prev) => ({ ...prev, [consultor.id]: e.target.value.replace(/[^0-9,.]/g, "") })); setFeedback3c(null); }}
+                      placeholder="0,0" inputMode="decimal"
+                      className="w-14 rounded-lg border border-violet-100 px-2 py-1.5 text-xs text-center outline-none focus:border-violet-400"
+                    />
+                    <button onClick={() => salvarNota3c(consultor.id)} disabled={emRascunho === undefined || salvando3c === consultor.id}
+                      className="w-8 h-8 rounded-lg bg-violet-600 text-white flex items-center justify-center disabled:opacity-30 hover:bg-violet-700 transition flex-shrink-0">
+                      {salvando3c === consultor.id ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    value={valorCampo}
-                    onChange={(e) => setNotas3cRascunho((prev) => ({ ...prev, [consultor.id]: e.target.value.replace(/[^0-9,.]/g, "") }))}
-                    placeholder="0,0" inputMode="decimal"
-                    className="w-14 rounded-lg border border-violet-100 px-2 py-1.5 text-xs text-center outline-none focus:border-violet-400"
-                  />
-                  <button onClick={() => salvarNota3c(consultor.id)} disabled={emRascunho === undefined || salvando3c === consultor.id}
-                    className="w-8 h-8 rounded-lg bg-violet-600 text-white flex items-center justify-center disabled:opacity-30 hover:bg-violet-700 transition flex-shrink-0">
-                    {salvando3c === consultor.id ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
-                  </button>
-                </div>
+                {fb && (
+                  <p className={`text-[10px] font-semibold mt-2 flex items-center gap-1 ${fb.tipo === "ok" ? "text-green-600" : "text-red-600"}`}>
+                    {fb.tipo === "ok" ? <CheckCircle2 size={11} /> : <AlertTriangle size={11} />} {fb.msg}
+                  </p>
+                )}
               </div>
             );
           })}
         </div>
+      </div>
+
+      {/* CARD 2 — Ranking visual (só exibição, sem inputs) */}
+      <div className="rounded-2xl border border-transparent bg-gradient-to-br from-violet-950 via-violet-900 to-violet-950 p-4 sm:p-6 overflow-hidden relative">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-extrabold text-white flex items-center gap-2"><Trophy size={16} className="text-amber-400" /> Ranking 3C</h3>
+          <span className="text-[10px] font-semibold text-violet-300">{formatarDataBR(diaAnterior3c)}</span>
+        </div>
+        <p className="text-[11px] text-violet-300 mb-5">Verde = 6,0 ou mais. Os 3 melhores sobem ao pódio! 🎉</p>
+
+        {podio3c.length === 0 ? (
+          <p className="text-xs text-violet-300 py-8 text-center">Assim que as notas de ontem forem lançadas, o ranking aparece aqui.</p>
+        ) : (
+          <>
+            <div className="flex items-end justify-center gap-4 mb-7 pt-2">
+              {[podio3c[1], podio3c[0], podio3c[2]].map((item, idx) => {
+                if (!item) return <div key={idx} className="w-20" />;
+                const posicao = item === podio3c[0] ? 1 : item === podio3c[1] ? 2 : 3;
+                const alturas = { 1: "h-24", 2: "h-16", 3: "h-11" };
+                const cores = { 1: "bg-gradient-to-t from-amber-500 to-amber-300", 2: "bg-gradient-to-t from-slate-400 to-slate-200", 3: "bg-gradient-to-t from-amber-800 to-amber-600" };
+                const corMedalha = { 1: "#FBBF24", 2: "#E2E8F0", 3: "#D97706" };
+                return (
+                  <div key={item.consultor.id} className="flex flex-col items-center w-20">
+                    {posicao === 1 && <span className="text-lg mb-0.5">👑</span>}
+                    <Avatar nome={item.consultor.nome} foto={item.consultor.foto} size={40} />
+                    <p className="text-[11px] font-bold text-white mt-1.5 text-center leading-tight">{item.consultor.nome}</p>
+                    <p className="text-sm font-extrabold text-green-400">{item.nota.toFixed(1)}</p>
+                    <div className={`w-full rounded-t-xl ${alturas[posicao]} ${cores[posicao]} flex items-start justify-center pt-2 mt-1.5 shadow-lg`}>
+                      <Medal size={20} color="#FFFFFF" fill={corMedalha[posicao]} strokeWidth={1.5} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="space-y-2">
+              {[...notasDeOntem].filter((n) => n.nota !== null).sort((a, b) => b.nota - a.nota).map((item, i) => {
+                const noPodio = i < 3;
+                const verde = item.nota >= 6;
+                return (
+                  <div key={item.consultor.id} className="flex items-center gap-3 rounded-xl bg-white/5 px-3 py-2.5">
+                    <span className="text-xs font-extrabold text-violet-300 w-4 text-center">{i + 1}º</span>
+                    <Avatar nome={item.consultor.nome} foto={item.consultor.foto} size={26} />
+                    <p className="flex-1 text-xs font-semibold text-white truncate">{item.consultor.nome}</p>
+                    {noPodio && <Medal size={13} color="#FFFFFF" fill={i === 0 ? "#FBBF24" : i === 1 ? "#E2E8F0" : "#D97706"} strokeWidth={1.5} />}
+                    <span className={`text-xs font-extrabold px-2 py-0.5 rounded-full ${verde ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>{item.nota.toFixed(1)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
       </div>
     </>
