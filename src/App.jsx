@@ -11,6 +11,7 @@ import {
   FileSpreadsheet, FileText, Printer, Share2, SlidersHorizontal, WifiOff
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, BarChart, Bar, Legend } from "recharts";
+import { firebaseConfigured } from "./firebaseConfig.js";
 
 const STORAGE_KEY = "radar:producoes";
 const ACIONAMENTOS_KEY = "radar:acionamentos";
@@ -19,6 +20,7 @@ const CONSULTORES_KEY = "radar:consultores";
 const METAS_INDIVIDUAIS_KEY = "radar:metas_individuais";
 const METAS_LOJA_KEY = "radar:metas_loja";
 const CONFIG_KEY = "radar:config";
+const AVALIACOES_3C_KEY = "radar:avaliacoes3c";
 
 // ---- Dados fixos da loja (viram estado editável no App) ----
 const CONSULTORES_PADRAO = [
@@ -108,6 +110,7 @@ export default function RadarSistema() {
   const [producoes, setProducoes] = useState([]);
   const [acionamentos, setAcionamentos] = useState([]);
   const [oportunidadesManuais, setOportunidadesManuais] = useState([]);
+  const [avaliacoes3c, setAvaliacoes3c] = useState([]); // [{ id, consultorId, data, nota }]
   const [loading, setLoading] = useState(true);
   const [erroCarregamento, setErroCarregamento] = useState(false);
   // indicador de conexão — avisa ANTES de tentar lançar algo com internet ruim
@@ -201,6 +204,10 @@ export default function RadarSistema() {
       try {
         const r3 = await buscarComRetentativa(OPORTUNIDADES_KEY);
         setOportunidadesManuais(r3 ? JSON.parse(r3.value) : []);
+      } catch (e) { falhaDeConexao = true; }
+      try {
+        const r3b = await buscarComRetentativa(AVALIACOES_3C_KEY);
+        setAvaliacoes3c(r3b ? JSON.parse(r3b.value) : []);
       } catch (e) { falhaDeConexao = true; }
       try {
         const r4 = await buscarComRetentativa(CONSULTORES_KEY);
@@ -322,6 +329,22 @@ export default function RadarSistema() {
   async function salvarOportunidades(novaLista) {
     setOportunidadesManuais(novaLista);
     return persistir(OPORTUNIDADES_KEY, novaLista);
+  }
+  // avaliação 3C: uma nota por consultor por dia. Atômico pra evitar conflito
+  // se mais de uma pessoa lançar notas ao mesmo tempo.
+  async function salvarAvaliacao3c(consultorId, data, nota) {
+    try {
+      const r = await window.storage.updateAtomico(AVALIACOES_3C_KEY, (lista) => {
+        const base = Array.isArray(lista) ? lista : [];
+        const semEssaData = base.filter((a) => !(a.consultorId === consultorId && a.data === data));
+        if (nota === null || nota === "") return semEssaData; // nota vazia = remove o lançamento daquele dia
+        return [...semEssaData, { id: `${consultorId}-${data}`, consultorId, data, nota: Number(nota) }];
+      });
+      setAvaliacoes3c(r.value);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, erro: e?.message || String(e) };
+    }
   }
 
   // ---- gerenciamento de consultores e metas individuais (agora com persistência real) ----
@@ -474,11 +497,11 @@ export default function RadarSistema() {
 
 
   const ctx = {
-    producoes, acionamentos, oportunidadesManuais, loading, diasUteisMes, diasUteisPassados,
+    producoes, acionamentos, oportunidadesManuais, avaliacoes3c, loading, diasUteisMes, diasUteisPassados,
     consultores, consultoresLoja, adicionarConsultor, removerConsultor, atualizarFotoConsultor, atualizarConsultorCampo,
     metasIndividuais, atualizarMetaIndividual, metaSeguroUnid,
     metaLojaPorProduto, atualizarMetaLojaProduto, atualizarMetaLojaTodos, metaLojaMix,
-    salvarProducoes, salvarProducaoUnica, salvarAcionamentos, salvarAcionamentoUnico, salvarOportunidades, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto,
+    salvarProducoes, salvarProducaoUnica, salvarAcionamentos, salvarAcionamentoUnico, salvarOportunidades, salvarAvaliacao3c, totalMesConsultorProduto, totalMesConsultorMix, contratosMesConsultorProduto,
     superContasUnicasMesConsultor, metaIndividualConsultorProduto, metaIndividualConsultorMix, metaLojaProdutoTotal,
     supervisorPin, supervisorFoto, salvarConfig,
   };
@@ -539,6 +562,14 @@ export default function RadarSistema() {
     <div className="min-h-screen w-full bg-violet-50 flex font-[Inter,sans-serif]">
       <Sidebar tela={telaEfetiva} setTela={setTela} onSair={sair} perfil={perfil} consultorLogado={consultorLogado} supervisorFoto={supervisorFoto} salvarConfig={salvarConfig} />
       <main className="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6 space-y-5">
+        {!firebaseConfigured && (
+          <div className="flex items-start gap-2 rounded-xl border-2 border-red-300 bg-red-50 px-4 py-3.5 text-sm text-red-800">
+            <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
+            <span>
+              <strong>Atenção: banco de dados NÃO conectado.</strong> Os dados lançados agora ficam salvos só neste navegador — não sincronizam com outros computadores/celulares e podem ser perdidos ao trocar de aparelho. Isso precisa ser corrigido nas configurações do GitHub (Secrets do Firebase).
+            </span>
+          </div>
+        )}
         {!online && (
           <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             <WifiOff size={16} className="flex-shrink-0" />
@@ -1709,7 +1740,7 @@ function TelaPainelEstrategico({ producoes, diasUteisMes, diasUteisPassados, tot
 // ============================================================
 // TELA: PARCIAL DO DIA
 // ============================================================
-function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, salvarAcionamentoUnico, consultores, consultoresLoja, metaLojaProdutoTotal, metaLojaMix }) {
+function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, salvarAcionamentoUnico, avaliacoes3c, salvarAvaliacao3c, consultores, consultoresLoja, metaLojaProdutoTotal, metaLojaMix }) {
   const [periodo, setPeriodo] = useState("hoje");
   const [produtoFiltro, setProdutoFiltro] = useState("todos");
   const [fConsultor, setFConsultor] = useState("");
@@ -1818,6 +1849,31 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, salvarAci
     if (editandoAcionamentoId === id) { setEditandoAcionamentoId(null); setFQtd(1); setFObs(""); setFConsultor(""); }
   }
 
+  // ---- Avaliação 3C — sempre referente ao dia ANTERIOR ao de hoje ----
+  const diaAnterior3c = (() => {
+    const d = new Date(); d.setDate(d.getDate() - 1);
+    return d.toISOString().slice(0, 10);
+  })();
+  const [notas3cRascunho, setNotas3cRascunho] = useState({});
+  const [salvando3c, setSalvando3c] = useState(null);
+  const notasDeOntem = useMemo(
+    () => consultores.map((c) => {
+      const registro = avaliacoes3c.find((a) => a.consultorId === c.id && a.data === diaAnterior3c);
+      return { consultor: c, nota: registro ? registro.nota : null };
+    }),
+    [avaliacoes3c, consultores, diaAnterior3c]
+  );
+  const podio3c = [...notasDeOntem].filter((n) => n.nota !== null).sort((a, b) => b.nota - a.nota).slice(0, 3);
+  async function salvarNota3c(consultorId) {
+    const bruto = notas3cRascunho[consultorId];
+    if (bruto === undefined) return;
+    setSalvando3c(consultorId);
+    const notaNum = bruto === "" ? null : Math.max(0, Math.min(10, Number(bruto.replace(",", "."))));
+    await salvarAvaliacao3c(consultorId, diaAnterior3c, notaNum);
+    setSalvando3c(null);
+    setNotas3cRascunho((prev) => { const p = { ...prev }; delete p[consultorId]; return p; });
+  }
+
   const evolucaoData = useMemo(() => {
     const horas = ["08h", "09h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h"];
     const agora = new Date().getHours();
@@ -1907,7 +1963,7 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, salvarAci
           </div>
 
           <div>
-            <h2 className="text-sm font-extrabold text-violet-950 mb-3">Desempenho dos Consultores — {periodo === "hoje" ? "Hoje" : "Semana"}</h2>
+            <h2 className="text-sm font-extrabold text-violet-950 mb-3">Desempenho dos Consultores</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {consultores.map((c) => {
                 const totalMix = totalConsultorMix(c.id);
@@ -2081,6 +2137,65 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, salvarAci
           </div>
         </div>
       </div>
+
+      <div className="rounded-2xl border border-violet-100 bg-white p-4 sm:p-6">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-extrabold text-violet-950 flex items-center gap-2"><Phone size={16} className="text-violet-600" /> Avaliação 3C</h3>
+          <span className="text-[10px] font-semibold text-slate-400">Referente a {formatarDataBR(diaAnterior3c)}</span>
+        </div>
+        <p className="text-[11px] text-slate-400 mb-4">Nota da IA que avalia as ligações do dia anterior — verde a partir de 6,0.</p>
+
+        {podio3c.length > 0 && (
+          <div className="flex items-end justify-center gap-3 mb-6 pt-2">
+            {[podio3c[1], podio3c[0], podio3c[2]].map((item, idx) => {
+              if (!item) return <div key={idx} className="w-20" />;
+              const posicao = item === podio3c[0] ? 1 : item === podio3c[1] ? 2 : 3;
+              const alturas = { 1: "h-20", 2: "h-14", 3: "h-10" };
+              const cores = { 1: "bg-amber-400", 2: "bg-slate-300", 3: "bg-amber-700" };
+              const corMedalha = { 1: "#FBBF24", 2: "#CBD5E1", 3: "#B45309" };
+              return (
+                <div key={item.consultor.id} className="flex flex-col items-center w-20">
+                  <Avatar nome={item.consultor.nome} foto={item.consultor.foto} size={36} />
+                  <p className="text-[10px] font-bold text-violet-950 mt-1 text-center leading-tight">{item.consultor.nome}</p>
+                  <p className="text-xs font-extrabold text-green-600">{item.nota.toFixed(1)}</p>
+                  <div className={`w-full rounded-t-lg ${alturas[posicao]} ${cores[posicao]} flex items-start justify-center pt-1.5 mt-1`}>
+                    <Medal size={18} color="#FFFFFF" fill={corMedalha[posicao]} strokeWidth={1.5} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {notasDeOntem.map(({ consultor, nota }) => {
+            const emRascunho = notas3cRascunho[consultor.id];
+            const valorCampo = emRascunho !== undefined ? emRascunho : (nota !== null ? String(nota).replace(".", ",") : "");
+            const corNota = nota === null ? "text-slate-300" : nota >= 6 ? "text-green-600" : "text-red-500";
+            return (
+              <div key={consultor.id} className="rounded-xl border border-violet-100 p-3 flex items-center gap-3">
+                <Avatar nome={consultor.nome} foto={consultor.foto} size={32} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-bold text-violet-950 truncate">{consultor.nome}</p>
+                  <p className={`text-lg font-extrabold ${corNota}`}>{nota !== null ? nota.toFixed(1) : "—"}</p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    value={valorCampo}
+                    onChange={(e) => setNotas3cRascunho((prev) => ({ ...prev, [consultor.id]: e.target.value.replace(/[^0-9,.]/g, "") }))}
+                    placeholder="0,0" inputMode="decimal"
+                    className="w-14 rounded-lg border border-violet-100 px-2 py-1.5 text-xs text-center outline-none focus:border-violet-400"
+                  />
+                  <button onClick={() => salvarNota3c(consultor.id)} disabled={emRascunho === undefined || salvando3c === consultor.id}
+                    className="w-8 h-8 rounded-lg bg-violet-600 text-white flex items-center justify-center disabled:opacity-30 hover:bg-violet-700 transition flex-shrink-0">
+                    {salvando3c === consultor.id ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
       </div>
     </>
   );
@@ -2091,7 +2206,7 @@ function TelaParcialDia({ producoes, acionamentos, salvarAcionamentos, salvarAci
 // ============================================================
 const CAMPOS_VAZIOS = {
   cliente: "", cpf: "", telefone: "", adesao: "", data: todayISO(),
-  produto: "", valor: "", consultorId: "",
+  produto: "", valor: "", consultorId: "", indicacao: "",
   tipoCredito: "", proximoRefin: "", possuiOferta: "sim", status: "digitado",
 };
 
@@ -2099,6 +2214,9 @@ function TelaCentralProducao({ producoes, salvarProducoes, salvarProducaoUnica, 
   const [campos, setCampos] = useState(() => consultorFixoId ? { ...CAMPOS_VAZIOS, consultorId: consultorFixoId } : CAMPOS_VAZIOS);
   const [editandoId, setEditandoId] = useState(null);
   const [busca, setBusca] = useState("");
+  const [filtroProduto, setFiltroProduto] = useState("todos");
+  const [pagina, setPagina] = useState(1);
+  const ITENS_POR_PAGINA = 10;
   const [salvando, setSalvando] = useState(false);
   const [mensagem, setMensagem] = useState(null);
 
@@ -2106,12 +2224,16 @@ function TelaCentralProducao({ producoes, salvarProducoes, salvarProducaoUnica, 
 
   const producoesFiltradas = useMemo(
     () => [...producoesVisiveis].filter((p) => {
+      if (filtroProduto !== "todos" && p.produto !== filtroProduto) return false;
       if (!busca.trim()) return true;
       const q = busca.toLowerCase();
       return p.cliente?.toLowerCase().includes(q) || p.cpf?.includes(q) || p.adesao?.toLowerCase().includes(q);
     }).sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0)),
-    [producoesVisiveis, busca]
+    [producoesVisiveis, busca, filtroProduto]
   );
+  useEffect(() => { setPagina(1); }, [busca, filtroProduto]);
+  const totalPaginas = Math.max(1, Math.ceil(producoesFiltradas.length / ITENS_POR_PAGINA));
+  const producoesPagina = producoesFiltradas.slice((pagina - 1) * ITENS_POR_PAGINA, pagina * ITENS_POR_PAGINA);
 
   function limparCampos() { setCampos(consultorFixoId ? { ...CAMPOS_VAZIOS, consultorId: consultorFixoId } : CAMPOS_VAZIOS); setEditandoId(null); }
 
@@ -2149,6 +2271,8 @@ function TelaCentralProducao({ producoes, salvarProducoes, salvarProducaoUnica, 
       ? (consultores.find((c) => c.id === consultorFixoId)?.nome || "Consultor(a)")
       : "Supervisora";
 
+    const idConsultorFinal = campos.consultorId;
+    const consultorFinalEhExterno = consultores.find((c) => c.id === idConsultorFinal)?.externo;
     const registro = {
       id: editandoId || `${Date.now()}`,
       data: campos.data,
@@ -2156,6 +2280,9 @@ function TelaCentralProducao({ producoes, salvarProducoes, salvarProducaoUnica, 
       hora: editandoId ? producoes.find((p) => p.id === editandoId)?.hora || horaAgora() : horaAgora(),
       cliente: campos.cliente.trim(), cpf: campos.cpf.trim(), telefone: campos.telefone.trim(), adesao: campos.adesao.trim(),
       produto: campos.produto, valor: parseValorMonetario(campos.valor), consultorId: campos.consultorId,
+      // só relevante pra consultor externo — meramente informativo, NUNCA usado em nenhum
+      // cálculo de meta/produção/mix (essas funções nem leem esse campo)
+      indicacao: consultorFinalEhExterno ? (campos.indicacao || "") : "",
       tipoCredito: campos.produto === "creditoPessoal" ? campos.tipoCredito : "",
       proximoRefin: campos.produto === "creditoPessoal" ? campos.proximoRefin : "",
       possuiOferta: campos.produto === "creditoPessoal" ? campos.possuiOferta : "",
@@ -2306,6 +2433,21 @@ function TelaCentralProducao({ producoes, salvarProducoes, salvarProducaoUnica, 
                 </select>
               </Campo>
             )}
+            {(() => {
+              const idAlvo = consultorFixoId || campos.consultorId;
+              const consultorSelecionado = consultores.find((c) => c.id === idAlvo);
+              if (!consultorSelecionado?.externo) return null;
+              return (
+                <div className="mt-3">
+                  <Campo label="Indicação — repassada para (informativo, não soma na produção)">
+                    <select value={campos.indicacao || ""} onChange={(e) => setCampos({ ...campos, indicacao: e.target.value })} className={inputClass}>
+                      <option value="">Selecione a consultora</option>
+                      {consultores.filter((c) => !c.externo).map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+                    </select>
+                  </Campo>
+                </div>
+              );
+            })()}
           </div>
 
           {/* visível pra todo mundo — supervisora e consultor(a) — na criação e na edição. */}
@@ -2329,9 +2471,15 @@ function TelaCentralProducao({ producoes, salvarProducoes, salvarProducaoUnica, 
       <div className="rounded-2xl border border-violet-100 bg-white p-4 sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <h3 className="text-sm font-extrabold text-violet-950">Produções Registradas ({producoesFiltradas.length})</h3>
-          <div className="relative w-full sm:w-64">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-violet-300" />
-            <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar por nome, CPF ou adesão..." className="w-full rounded-xl border border-violet-100 bg-violet-50 pl-9 pr-3 py-2 text-xs text-violet-950 outline-none focus:border-violet-400" />
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            <select value={filtroProduto} onChange={(e) => setFiltroProduto(e.target.value)} className="rounded-xl border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-950 outline-none focus:border-violet-400">
+              <option value="todos">Todos os produtos</option>
+              {PRODUTOS_LANCAMENTO.map((p) => <option key={p.id} value={p.id}>{p.nome}</option>)}
+            </select>
+            <div className="relative flex-1 sm:w-64">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-violet-300" />
+              <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar por nome, CPF ou adesão..." className="w-full rounded-xl border border-violet-100 bg-violet-50 pl-9 pr-3 py-2 text-xs text-violet-950 outline-none focus:border-violet-400" />
+            </div>
           </div>
         </div>
 
@@ -2347,11 +2495,14 @@ function TelaCentralProducao({ producoes, salvarProducoes, salvarProducaoUnica, 
                 </tr>
               </thead>
               <tbody>
-                {producoesFiltradas.map((p, i) => (
+                {producoesPagina.map((p, i) => (
                   <tr key={p.id} className="border-b border-violet-50">
-                    <td className="py-2.5 pr-3 text-slate-400">{i + 1}</td>
+                    <td className="py-2.5 pr-3 text-slate-400">{(pagina - 1) * ITENS_POR_PAGINA + i + 1}</td>
                     <td className="py-2.5 pr-3 font-semibold text-violet-950 whitespace-nowrap">
                       {p.cliente}
+                      {p.indicacao && (
+                        <p className="text-[9px] font-normal text-amber-600 mt-0.5">indicação: {nomeConsultor(p.indicacao)}</p>
+                      )}
                       {p.criadoPor && (
                         <p className="text-[9px] font-normal text-slate-400 mt-0.5">
                           {p.editadoPor ? `editado por ${p.editadoPor}` : `lançado por ${p.criadoPor}`}
@@ -2380,6 +2531,20 @@ function TelaCentralProducao({ producoes, salvarProducoes, salvarProducaoUnica, 
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {producoesFiltradas.length > ITENS_POR_PAGINA && (
+          <div className="flex items-center justify-between gap-3 mt-4 pt-4 border-t border-violet-50">
+            <p className="text-[11px] text-slate-400">
+              Mostrando {(pagina - 1) * ITENS_POR_PAGINA + 1}–{Math.min(pagina * ITENS_POR_PAGINA, producoesFiltradas.length)} de {producoesFiltradas.length}
+            </p>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setPagina((p) => Math.max(1, p - 1))} disabled={pagina === 1}
+                className="w-8 h-8 rounded-lg border border-violet-100 flex items-center justify-center text-violet-600 disabled:opacity-30 hover:bg-violet-50 transition">‹</button>
+              <span className="text-xs font-bold text-violet-950 min-w-[3.5rem] text-center">{pagina} / {totalPaginas}</span>
+              <button onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))} disabled={pagina === totalPaginas}
+                className="w-8 h-8 rounded-lg border border-violet-100 flex items-center justify-center text-violet-600 disabled:opacity-30 hover:bg-violet-50 transition">›</button>
+            </div>
           </div>
         )}
       </div>
